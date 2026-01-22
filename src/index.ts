@@ -40,6 +40,8 @@ import { Note } from "./api/types";
 async function main() {
   const outputPath = directory();
   const extractPath = directory();
+  const finalOutputPath = process.env.NIMBUS_OUTPUT_PATH || "./nimbus-export.zip";
+  const workspaceFilter = process.env.NIMBUS_WORKSPACE;
 
   let email = process.env.NIMBUS_EMAIL;
   let password = process.env.NIMBUS_PASSWORD;
@@ -80,7 +82,7 @@ async function main() {
     () => getOrganizations(user)
   );
 
-  const workspaces = await workWithSpinner(
+  const allWorkspaces = await workWithSpinner(
     "Getting workspaces...",
     (w) => `Found ${w.length} workspaces`,
     async () =>
@@ -90,6 +92,14 @@ async function main() {
         )
       ).flat()
   );
+
+  let workspaces = allWorkspaces;
+  if (workspaceFilter) {
+    workspaces = allWorkspaces.filter((w) => w.title === workspaceFilter);
+    if (workspaces.length === 0) {
+      throw new Error(`Workspace "${workspaceFilter}" not found. Available workspaces: ${allWorkspaces.map(w => w.title).join(", ")}`);
+    }
+  }
 
   const folders = await workWithSpinner(
     "Getting folders...",
@@ -132,8 +142,11 @@ async function main() {
     () => `Notes processed.`,
     async (spinner) => {
       const extracted = new Set();
+      let notesWithPath = 0;
+      let notesExtracted = 0;
       for (const note of notes) {
         if (!note.path || extracted.has(note.globalId)) continue;
+        notesWithPath++;
 
         const zipPath = path.join(outputPath, note.path);
         const dir = path.join(extractPath, note.globalId);
@@ -159,20 +172,32 @@ async function main() {
         await writeFile(path.join(dir, "metadata.json"), JSON.stringify(note));
 
         extracted.add(note.globalId);
+        notesExtracted++;
       }
+      console.error(`DEBUG: Notes with path: ${notesWithPath}, Notes extracted: ${notesExtracted}`);
     }
   );
 
   const zip = new ADMZip();
-  new fdir()
+  const files = new fdir()
     .withRelativePaths()
     .crawl(extractPath)
-    .sync()
-    .forEach((filePath) =>
-      zip.addLocalFile(path.join(extractPath, filePath), path.dirname(filePath))
-    );
+    .sync();
 
-  await zip.writeZipPromise("./nimbus-export.zip");
+  console.error(`DEBUG: Adding ${files.length} files to zip from ${extractPath}`);
+  files.forEach((filePath) => {
+    const fullPath = path.join(extractPath, filePath);
+    zip.addLocalFile(fullPath, path.dirname(filePath));
+  });
+
+  console.error(`DEBUG: Writing zip to ${finalOutputPath}`);
+  try {
+    await zip.writeZipPromise(finalOutputPath);
+    console.error(`DEBUG: Zip written successfully`);
+  } catch (e) {
+    console.error(`DEBUG: Error writing zip:`, e);
+    throw e;
+  }
 
   await rm(extractPath, { recursive: true, force: true });
   await rm(outputPath, { recursive: true, force: true });
