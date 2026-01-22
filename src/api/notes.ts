@@ -70,12 +70,17 @@ export async function getNotes(
 }
 
 async function getNoteTags(user: User, note: Note) {
-  const response = await request({
-    user,
-    endpoint: `/api/workspaces/${note.workspaceId}/notes/${note.globalId}/tags`,
-    method: "GET",
-  });
-  return (await response.json()) as string[];
+  try {
+    const response = await request({
+      user,
+      endpoint: `/api/workspaces/${note.workspaceId}/notes/${note.globalId}/tags`,
+      method: "GET",
+    });
+    return (await response.json()) as string[];
+  } catch (e) {
+    // Silently skip tags on error (rate limiting, etc.)
+    return [];
+  }
 }
 
 export async function exportNote(
@@ -83,25 +88,34 @@ export async function exportNote(
   note: Note,
   format: "html" | "pdf"
 ) {
-  const response = await request({
-    user,
-    endpoint: `/api/workspaces/${note.workspaceId}/notes/${note.globalId}/export`,
-    method: "POST",
-    body: JSON.stringify({
-      language: "en",
-      timezone: -300,
-      workspaceId: note.workspaceId,
-      noteGlobalId: note.globalId,
-      format,
-      style: "normal",
-      size: "normal",
-      paperFormat: "A4",
-      folders: {},
-    }),
-    json: true,
-  });
-  const { id } = (await response.json()) as { id: string };
-  return id;
+  try {
+    const response = await request({
+      user,
+      endpoint: `/api/workspaces/${note.workspaceId}/notes/${note.globalId}/export`,
+      method: "POST",
+      body: JSON.stringify({
+        language: "en",
+        timezone: -300,
+        workspaceId: note.workspaceId,
+        noteGlobalId: note.globalId,
+        format,
+        style: "normal",
+        size: "normal",
+        paperFormat: "A4",
+        folders: {},
+      }),
+      json: true,
+    });
+    const json = await response.json() as { id: string; errorCode?: number };
+    if (json.errorCode !== undefined && json.errorCode !== 0) {
+      console.error(`DEBUG: Export failed for note ${note.globalId}, errorCode: ${json.errorCode}`);
+      throw new Error(`Export failed with errorCode ${json.errorCode}`);
+    }
+    return json.id;
+  } catch (e) {
+    console.error(`DEBUG: Export exception for note ${note.globalId}:`, e);
+    throw e;
+  }
 }
 
 export async function downloadNotes(
@@ -112,14 +126,22 @@ export async function downloadNotes(
 ): Promise<void> {
   if (!existsSync(outputPath)) await mkdir(outputPath);
 
+  console.error(`DEBUG: Connecting to WebSocket at wss://${user.domain}`);
   const socket = io(`wss://${user.domain}`, {
     extraHeaders: { Cookie: `eversessionid=${user.sessionId}` },
     transports: ["websocket"],
   });
 
-  await new Promise((resolve) =>
-    socket.on("socketConnect:userConnected", resolve)
-  );
+  await new Promise((resolve) => {
+    socket.on("socketConnect:userConnected", resolve);
+    socket.on("connect_error", (err) => {
+      console.error(`DEBUG: WebSocket connection error:`, err);
+    });
+    socket.on("disconnect", (reason) => {
+      console.error(`DEBUG: WebSocket disconnected:`, reason);
+    });
+  });
+  console.error(`DEBUG: WebSocket connected successfully`);
 
   const queue: Map<string, number> = new Map();
   const messages: {
@@ -154,7 +176,7 @@ export async function downloadNotes(
       }
     });
 
-    const pqueue = new PQueue({ concurrency: 16 });
+    const pqueue = new PQueue({ concurrency: 10 });
 
     if (spinner) {
       let count = 0;
@@ -166,23 +188,30 @@ export async function downloadNotes(
     await pqueue.addAll(
       notes.map((note) => {
         return async () => {
-          const exportId = await exportNote(user, note, "html");
-          queue.set(
-            exportId,
-            setTimeout(() => {
-              queue.delete(exportId);
-              if (queue.size === 0) {
-                socket.close();
-                resolve();
-              }
-            }, 60000) as unknown as number
-          );
+          try {
+            const exportId = await exportNote(user, note, "html");
+            queue.set(
+              exportId,
+              setTimeout(() => {
+                console.error(`DEBUG: Export ${exportId} timed out after 5 minutes`);
+                queue.delete(exportId);
+                if (queue.size === 0) {
+                  socket.close();
+                  resolve();
+                }
+              }, 300000) as unknown as number
+            );
+          } catch (e) {
+            console.error(`DEBUG: Failed to export note ${note.globalId}:`, e);
+          }
         };
       })
     );
 
-    if (spinner) spinner.text = `Waiting for download urls...`;
+    if (spinner) spinner.text = `Waiting for download urls... (${queue.size} exports pending)`;
   });
+
+  console.error(`DEBUG: WebSocket closed. Exported: ${queue.size} (timed out), Received: ${messages.length} job:success events`);
 
   if (spinner) spinner.text = `Starting download`;
 
@@ -218,4 +247,7 @@ export async function downloadNotes(
       };
     })
   );
+
+  const notesWithPath = notes.filter((n) => n.path).length;
+  console.error(`DEBUG: Download phase complete. ${notesWithPath}/${notes.length} notes have path property set`);
 }

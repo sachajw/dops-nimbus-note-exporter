@@ -142,11 +142,8 @@ async function main() {
     () => `Notes processed.`,
     async (spinner) => {
       const extracted = new Set();
-      let notesWithPath = 0;
-      let notesExtracted = 0;
       for (const note of notes) {
         if (!note.path || extracted.has(note.globalId)) continue;
-        notesWithPath++;
 
         const zipPath = path.join(outputPath, note.path);
         const dir = path.join(extractPath, note.globalId);
@@ -172,9 +169,7 @@ async function main() {
         await writeFile(path.join(dir, "metadata.json"), JSON.stringify(note));
 
         extracted.add(note.globalId);
-        notesExtracted++;
       }
-      console.error(`DEBUG: Notes with path: ${notesWithPath}, Notes extracted: ${notesExtracted}`);
     }
   );
 
@@ -184,20 +179,12 @@ async function main() {
     .crawl(extractPath)
     .sync();
 
-  console.error(`DEBUG: Adding ${files.length} files to zip from ${extractPath}`);
   files.forEach((filePath) => {
     const fullPath = path.join(extractPath, filePath);
     zip.addLocalFile(fullPath, path.dirname(filePath));
   });
 
-  console.error(`DEBUG: Writing zip to ${finalOutputPath}`);
-  try {
-    await zip.writeZipPromise(finalOutputPath);
-    console.error(`DEBUG: Zip written successfully`);
-  } catch (e) {
-    console.error(`DEBUG: Error writing zip:`, e);
-    throw e;
-  }
+  await zip.writeZipPromise(finalOutputPath);
 
   await rm(extractPath, { recursive: true, force: true });
   await rm(outputPath, { recursive: true, force: true });
