@@ -37,6 +37,7 @@ export async function login(email: string, password: string): Promise<User> {
     endpoint: "/auth/api/auth",
     method: "POST",
     body: `{"login":"${email}","password":"${password}"}`,
+    json: true,
   });
   const json = (await response.json()) as LoginResponse;
   if (json.errorCode !== 0) throw new Error("Wrong password.");

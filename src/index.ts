@@ -18,6 +18,7 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+import "dotenv/config";
 import path from "path";
 import { login } from "./api/auth";
 import { downloadNotes, getNotes } from "./api/notes";
@@ -40,22 +41,37 @@ async function main() {
   const outputPath = directory();
   const extractPath = directory();
 
-  const { email } = await prompts({
-    type: "text",
-    name: "email",
-    message: "Your Nimbus Note email:",
-  });
+  let email = process.env.NIMBUS_EMAIL;
+  let password = process.env.NIMBUS_PASSWORD;
 
-  const { password } = await prompts({
-    type: "password",
-    name: "password",
-    message: "Your Nimbus Note password:",
-  });
+  if (!email) {
+    const response = await prompts({
+      type: "text",
+      name: "email",
+      message: "Your Nimbus Note email:",
+    });
+    email = response.email;
+  }
+
+  if (!password) {
+    const response = await prompts({
+      type: "password",
+      name: "password",
+      message: "Your Nimbus Note password:",
+    });
+    password = response.password;
+  }
+
+  if (!email || !password) {
+    throw new Error("Email and password are required. Set NIMBUS_EMAIL and NIMBUS_PASSWORD in .env or enter them when prompted.");
+  }
+
+  const credentials = { email, password };
 
   const user = await workWithSpinner(
     "Logging you in...",
     (u) => `Logged in as ${u.domain}`,
-    () => login(email, password)
+    () => login(credentials.email, credentials.password)
   );
 
   const organizations = await workWithSpinner(

@@ -31,6 +31,7 @@
     "dom-serializer": "^2.0.0",
     "domhandler": "^5.0.3",
     "domutils": "^3.0.1",
+    "dotenv": "^17.2.3",
     "fdir": "^6.0.1",
     "fetch-cookie": "^2.1.0",
     "htmlparser2": "^8.0.1",
