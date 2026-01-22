@@ -42,6 +42,7 @@ async function main() {
   const extractPath = directory();
   const finalOutputPath = process.env.NIMBUS_OUTPUT_PATH || "./nimbus-export.zip";
   const workspaceFilter = process.env.NIMBUS_WORKSPACE;
+  const folderFilter = process.env.NIMBUS_FOLDER;
 
   let email = process.env.NIMBUS_EMAIL;
   let password = process.env.NIMBUS_PASSWORD;
@@ -101,12 +102,42 @@ async function main() {
     }
   }
 
-  const folders = await workWithSpinner(
+  const allFolders = await workWithSpinner(
     "Getting folders...",
     (f) => `Found ${f.length} folders across ${workspaces.length} workspaces`,
     async () =>
       (await Promise.all(workspaces.map((w) => getFolders(user, w)))).flat()
   );
+
+  let folders = allFolders;
+  let filteredFolderIds = new Set<string>();
+  if (folderFilter) {
+    const matchingFolders = allFolders.filter((f) => f.title === folderFilter);
+    if (matchingFolders.length === 0) {
+      throw new Error(
+        `Folder "${folderFilter}" not found. Available folders: ${[
+          ...new Set(allFolders.map((f) => f.title)),
+        ].join(", ")}`
+      );
+    }
+    // Include the matching folder and all its subfolders
+    filteredFolderIds = new Set(matchingFolders.map((f) => f.globalId));
+    // Find all subfolders (folders whose parentId is in the filtered set)
+    let added = true;
+    while (added) {
+      added = false;
+      for (const folder of allFolders) {
+        if (
+          !filteredFolderIds.has(folder.globalId) &&
+          filteredFolderIds.has(folder.parentId)
+        ) {
+          filteredFolderIds.add(folder.globalId);
+          added = true;
+        }
+      }
+    }
+    folders = allFolders.filter((f) => filteredFolderIds.has(f.globalId));
+  }
 
   const attachments = await workWithSpinner(
     "Getting attachments...",
@@ -120,7 +151,7 @@ async function main() {
       ).flat()
   );
 
-  const notes = await workWithSpinner<Note[]>(
+  const allNotes = await workWithSpinner<Note[]>(
     "Getting notes metadata...",
     (n) => `Found ${n.length} notes across ${workspaces.length} workspaces`,
     async (spinner) =>
@@ -128,6 +159,19 @@ async function main() {
         await Promise.all(workspaces.map((w) => getNotes(user, w, spinner)))
       ).flat()
   );
+
+  let notes = allNotes;
+  if (folderFilter) {
+    notes = allNotes.filter((n) => filteredFolderIds.has(n.parentId));
+    if (notes.length === 0) {
+      throw new Error(
+        `No notes found in folder "${folderFilter}". Try a different folder or export all notes.`
+      );
+    }
+    console.log(
+      `Filtered to ${notes.length} notes in folder "${folderFilter}" (including subfolders)`
+    );
+  }
 
   if (notes.length === 0) throw new Error("0 notes found.");
 

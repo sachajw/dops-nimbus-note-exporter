@@ -106,6 +106,13 @@ export async function exportNote(
       }),
       json: true,
     });
+
+    if (!response.ok) {
+      const text = await response.text();
+      console.error(`DEBUG: Export failed for note ${note.globalId}, status: ${response.status}, response: ${text.substring(0, 200)}`);
+      throw new Error(`Export failed with status ${response.status}`);
+    }
+
     const json = await response.json() as { id: string; errorCode?: number };
     if (json.errorCode !== undefined && json.errorCode !== 0) {
       console.error(`DEBUG: Export failed for note ${note.globalId}, errorCode: ${json.errorCode}`);
