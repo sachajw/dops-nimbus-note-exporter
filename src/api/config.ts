@@ -109,4 +109,19 @@ export class Config {
   static get enableUrlPrediction(): boolean {
     return process.env.NIMBUS_ENABLE_URL_PREDICTION !== "false"; // Default true
   }
+
+  // Resume mode: path to existing export to extract already-exported note IDs
+  static get resumeFromArchive(): string | undefined {
+    return process.env.NIMBUS_RESUME_FROM;
+  }
+
+  // Failed notes file: path to save failed note IDs for retry
+  static get failedNotesFile(): string {
+    return process.env.NIMBUS_FAILED_NOTES_FILE || "./failed-notes.json";
+  }
+
+  // Retry only mode: path to JSON file with note IDs to retry
+  static get retryOnlyFile(): string | undefined {
+    return process.env.NIMBUS_RETRY_ONLY;
+  }
 }

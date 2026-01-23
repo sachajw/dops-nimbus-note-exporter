@@ -29,8 +29,8 @@ import {
   Workspace,
 } from "./api/teams";
 import ADMZip from "adm-zip";
-import { mkdir, rm, writeFile } from "fs/promises";
-import { createReadStream, createWriteStream } from "fs";
+import { mkdir, rm, writeFile, readFile } from "fs/promises";
+import { createReadStream, createWriteStream, existsSync } from "fs";
 import { fdir } from "fdir";
 import prompts from "prompts";
 import ora, { Ora } from "ora";
@@ -41,6 +41,82 @@ import { Config } from "./api/config";
 import { StatsTracker } from "./api/stats";
 import archiver from "archiver";
 import { pipeline } from "stream/promises";
+
+// Helper function to extract already-exported note IDs from an existing archive
+async function getExportedNoteIds(archivePath: string): Promise<Set<string>> {
+  const exportedIds = new Set<string>();
+
+  if (!existsSync(archivePath)) {
+    console.log(`Resume archive not found: ${archivePath}`);
+    return exportedIds;
+  }
+
+  console.log(`Reading existing archive to find already-exported notes: ${archivePath}`);
+
+  try {
+    const zip = new ADMZip(archivePath);
+    const entries = zip.getEntries();
+
+    // Look for metadata.json files - their parent directory name is the note ID
+    for (const entry of entries) {
+      if (entry.entryName.endsWith("/metadata.json")) {
+        // Path is like "noteId/metadata.json"
+        const parts = entry.entryName.split("/");
+        if (parts.length >= 2) {
+          exportedIds.add(parts[0]);
+        }
+      }
+    }
+
+    console.log(`Found ${exportedIds.size} already-exported notes in archive`);
+  } catch (e: any) {
+    console.error(`Warning: Could not read archive: ${e.message}`);
+  }
+
+  return exportedIds;
+}
+
+// Helper function to load note IDs from a JSON file
+async function loadNoteIdsFromFile(filePath: string): Promise<Set<string>> {
+  const ids = new Set<string>();
+
+  if (!existsSync(filePath)) {
+    return ids;
+  }
+
+  try {
+    const content = await readFile(filePath, "utf-8");
+    const data = JSON.parse(content);
+
+    if (Array.isArray(data.noteIds)) {
+      for (const id of data.noteIds) {
+        ids.add(id);
+      }
+    }
+
+    console.log(`Loaded ${ids.size} note IDs from ${filePath}`);
+  } catch (e: any) {
+    console.error(`Warning: Could not read file: ${e.message}`);
+  }
+
+  return ids;
+}
+
+// Helper function to save failed note IDs to a JSON file
+async function saveFailedNoteIds(filePath: string, notes: Note[], successfulIds: Set<string>): Promise<void> {
+  const failedIds = notes.filter(n => !successfulIds.has(n.globalId)).map(n => n.globalId);
+
+  const data = {
+    timestamp: new Date().toISOString(),
+    totalAttempted: notes.length,
+    successful: successfulIds.size,
+    failed: failedIds.length,
+    noteIds: failedIds,
+  };
+
+  await writeFile(filePath, JSON.stringify(data, null, 2));
+  console.log(`Saved ${failedIds.length} failed note IDs to ${filePath}`);
+}
 
 async function main() {
   const outputPath = directory();
@@ -167,7 +243,6 @@ async function main() {
 
   // Create stats tracker after we know the total note count
   let notes = allNotes;
-  const stats = new StatsTracker(notes.length);
 
   if (folderFilter) {
     notes = allNotes.filter((n) => filteredFolderIds.has(n.parentId));
@@ -181,7 +256,27 @@ async function main() {
     );
   }
 
-  if (notes.length === 0) throw new Error("0 notes found.");
+  // RESUME MODE: Filter out already-exported notes
+  if (Config.resumeFromArchive) {
+    const alreadyExported = await getExportedNoteIds(Config.resumeFromArchive);
+    const beforeCount = notes.length;
+    notes = notes.filter(n => !alreadyExported.has(n.globalId));
+    console.log(`Resume mode: ${beforeCount - notes.length} notes already exported, ${notes.length} remaining`);
+  }
+
+  // RETRY-ONLY MODE: Only export notes from the specified file
+  if (Config.retryOnlyFile) {
+    const retryIds = await loadNoteIdsFromFile(Config.retryOnlyFile);
+    if (retryIds.size > 0) {
+      const beforeCount = notes.length;
+      notes = notes.filter(n => retryIds.has(n.globalId));
+      console.log(`Retry-only mode: ${notes.length} notes to retry (from ${retryIds.size} in file)`);
+    }
+  }
+
+  const stats = new StatsTracker(notes.length);
+
+  if (notes.length === 0) throw new Error("0 notes found to export.");
 
   await workWithSpinner(
     "Downloading notes...",
@@ -286,6 +381,10 @@ async function main() {
 
   // Mark export complete and display summary
   stats.markComplete();
+
+  // Save failed note IDs for retry
+  const successfulIds = new Set(notes.filter(n => n.path).map(n => n.globalId));
+  await saveFailedNoteIds(Config.failedNotesFile, notes, successfulIds);
 
   // Display export statistics
   console.log(stats.getSummary());
