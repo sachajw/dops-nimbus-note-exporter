@@ -29,11 +29,43 @@ import PQueue from "p-queue";
 import { Ora } from "ora";
 import { Workspace } from "./teams";
 import { Note } from "./types";
+import { Config } from "./config";
+import { retryOrThrow } from "./retry";
+import { StatsTracker, FailureReason } from "./stats";
+
+// WebSocket event types
+interface JobSuccessEvent {
+  message: {
+    uuid: string;
+    fileName: string;
+    fileUrl: string;
+    taskData?: {
+      noteGlobalId: string;
+    };
+  };
+}
+
+interface JobFailureEvent {
+  message: {
+    uuid: string;
+    error?: string;
+    taskData?: {
+      noteGlobalId: string;
+    };
+  };
+}
+
+interface ExportRequest {
+  note: Note;
+  exportId?: string;
+  attempts: number;
+}
 
 export async function getNotes(
   user: User,
   workspace: Workspace,
-  spinner?: Ora
+  spinner?: Ora,
+  stats?: StatsTracker
 ) {
   const pageSize = 500;
   const notes: Note[] = [];
@@ -57,11 +89,12 @@ export async function getNotes(
 
   if (spinner) spinner.text = `Getting tags for notes...`;
 
-  const pqueue = new PQueue({ concurrency: 16 });
+  const pqueue = new PQueue({ concurrency: Config.tagConcurrency });
   await pqueue.addAll(
     notes.map((note) => {
       return async () => {
-        note.tags = await getNoteTags(user, note);
+        const tags = await getNoteTags(user, note, stats);
+        note.tags = tags;
       };
     })
   );
@@ -69,15 +102,18 @@ export async function getNotes(
   return notes;
 }
 
-async function getNoteTags(user: User, note: Note) {
+async function getNoteTags(user: User, note: Note, stats?: StatsTracker): Promise<string[]> {
   try {
     const response = await request({
       user,
       endpoint: `/api/workspaces/${note.workspaceId}/notes/${note.globalId}/tags`,
       method: "GET",
     });
-    return (await response.json()) as string[];
+    const tags = (await response.json()) as string[];
+    if (stats) stats.recordTagFetchSuccess();
+    return tags;
   } catch (e) {
+    if (stats) stats.recordTagFetchFailed();
     // Silently skip tags on error (rate limiting, etc.)
     return [];
   }
@@ -86,8 +122,12 @@ async function getNoteTags(user: User, note: Note) {
 export async function exportNote(
   user: User,
   note: Note,
-  format: "html" | "pdf"
-) {
+  format: "html" | "pdf",
+  stats?: StatsTracker
+): Promise<string> {
+  // Track export attempts
+  note.exportAttempts = (note.exportAttempts || 0) + 1;
+
   try {
     const response = await request({
       user,
@@ -109,18 +149,58 @@ export async function exportNote(
 
     if (!response.ok) {
       const text = await response.text();
-      console.error(`DEBUG: Export failed for note ${note.globalId}, status: ${response.status}, response: ${text.substring(0, 200)}`);
-      throw new Error(`Export failed with status ${response.status}`);
+      const error = `Export failed with status ${response.status}: ${text.substring(0, 200)}`;
+      if (Config.debug) {
+        console.error(`DEBUG: ${error}`);
+      }
+      if (stats) {
+        stats.recordExportFailure(
+          note,
+          response.status === 429 ? FailureReason.RATE_LIMITED : FailureReason.SERVER_ERROR,
+          error,
+          note.exportAttempts
+        );
+      }
+      throw new Error(error);
     }
 
     const json = await response.json() as { id: string; errorCode?: number };
     if (json.errorCode !== undefined && json.errorCode !== 0) {
-      console.error(`DEBUG: Export failed for note ${note.globalId}, errorCode: ${json.errorCode}`);
-      throw new Error(`Export failed with errorCode ${json.errorCode}`);
+      const error = `Export failed with errorCode ${json.errorCode}`;
+      if (Config.debug) {
+        console.error(`DEBUG: ${error}`);
+      }
+      if (stats) {
+        stats.recordExportFailure(note, FailureReason.ERROR, error, note.exportAttempts);
+      }
+      throw new Error(error);
     }
+
+    // Store the export ID for tracking
+    note.exportId = json.id;
+
+    if (Config.debug) {
+      console.error(`DEBUG: Export request succeeded for note ${note.globalId}, export ID: ${json.id}`);
+    }
+
     return json.id;
   } catch (e) {
-    console.error(`DEBUG: Export exception for note ${note.globalId}:`, e);
+    const error = e as Error;
+    if (Config.debug) {
+      console.error(`DEBUG: Export exception for note ${note.globalId}:`, error.message);
+    }
+    if (stats && !note.exportFailed) {
+      // Determine failure reason
+      let reason = FailureReason.UNKNOWN;
+      if (error.message.includes("rate limit") || error.message.includes("429")) {
+        reason = FailureReason.RATE_LIMITED;
+      } else if (error.message.includes("timeout")) {
+        reason = FailureReason.TIMEOUT;
+      } else if (error.message.includes("network") || error.message.includes("ECONN")) {
+        reason = FailureReason.NETWORK_ERROR;
+      }
+      stats.recordExportFailure(note, reason, error.message, note.exportAttempts);
+    }
     throw e;
   }
 }
@@ -129,7 +209,8 @@ export async function downloadNotes(
   user: User,
   notes: Note[],
   outputPath: string,
-  spinner?: Ora
+  spinner?: Ora,
+  stats?: StatsTracker
 ): Promise<void> {
   if (!existsSync(outputPath)) await mkdir(outputPath);
 
@@ -139,10 +220,11 @@ export async function downloadNotes(
     transports: ["websocket"],
   });
 
-  await new Promise((resolve) => {
-    socket.on("socketConnect:userConnected", resolve);
+  await new Promise<void>((resolve, reject) => {
+    socket.on("socketConnect:userConnected", () => resolve());
     socket.on("connect_error", (err) => {
       console.error(`DEBUG: WebSocket connection error:`, err);
+      reject(new Error(`WebSocket connection failed: ${err.message}`));
     });
     socket.on("disconnect", (reason) => {
       console.error(`DEBUG: WebSocket disconnected:`, reason);
@@ -150,17 +232,24 @@ export async function downloadNotes(
   });
   console.error(`DEBUG: WebSocket connected successfully`);
 
-  const queue: Map<string, number> = new Map();
+  const pendingExports: Map<string, NodeJS.Timeout> = new Map();
+  const completedExports: Set<string> = new Set();
+  const failedExports: Set<string> = new Set();
   const messages: {
     message: { uuid: string; fileName: string; fileUrl: string };
     note: Note;
   }[] = [];
 
-  await new Promise<void>(async (resolve) => {
-    socket.on("job:success", async (event) => {
-      if (event?.message?.fileUrl && queue.has(event?.message?.uuid)) {
-        clearTimeout(queue.get(event?.message?.uuid));
-        queue.delete(event?.message?.uuid);
+  // Track export requests
+  const exportRequests: Map<string, ExportRequest> = new Map();
+
+  await new Promise<void>((resolve, reject) => {
+    // Handle successful exports
+    socket.on("job:success", async (event: JobSuccessEvent) => {
+      if (event?.message?.fileUrl && pendingExports.has(event?.message?.uuid)) {
+        clearTimeout(pendingExports.get(event?.message?.uuid)!);
+        pendingExports.delete(event?.message?.uuid);
+        completedExports.add(event?.message?.uuid);
 
         const noteId = event?.message?.taskData?.noteGlobalId;
         const note = notes.find((note) => note.globalId === noteId);
@@ -169,21 +258,58 @@ export async function downloadNotes(
           return;
         }
 
+        if (stats) stats.recordExportSuccess(note);
+
         messages.push({ message: event.message, note });
 
         if (spinner)
-          spinner.text = `Saving download urls (${notes.length - queue.size}/${
+          spinner.text = `Saving download urls (${completedExports.size + failedExports.size}/${
             notes.length
           })...`;
 
-        if (queue.size === 0) {
+        // Check if all exports are complete (success or failure)
+        if (pendingExports.size === 0) {
           socket.close();
           resolve();
         }
       }
     });
 
-    const pqueue = new PQueue({ concurrency: 10 });
+    // Handle failed exports
+    socket.on("job:failure", async (event: JobFailureEvent) => {
+      const exportId = event?.message?.uuid;
+      if (exportId && pendingExports.has(exportId)) {
+        clearTimeout(pendingExports.get(exportId)!);
+        pendingExports.delete(exportId);
+        failedExports.add(exportId);
+
+        const noteId = event?.message?.taskData?.noteGlobalId;
+        const note = notes.find((n) => n.globalId === noteId);
+
+        if (note) {
+          const errorMsg = event?.message?.error || "Unknown export failure";
+          if (Config.debug) {
+            console.error(`DEBUG: Export job failed for note ${note.globalId}: ${errorMsg}`);
+          }
+          if (stats) {
+            stats.recordExportFailure(note, FailureReason.ERROR, errorMsg, note.exportAttempts || 1);
+          }
+        }
+
+        if (spinner)
+          spinner.text = `Saving download urls (${completedExports.size + failedExports.size}/${
+            notes.length
+          })...`;
+
+        // Check if all exports are complete
+        if (pendingExports.size === 0) {
+          socket.close();
+          resolve();
+        }
+      }
+    });
+
+    const pqueue = new PQueue({ concurrency: Config.exportConcurrency });
 
     if (spinner) {
       let count = 0;
@@ -192,38 +318,97 @@ export async function downloadNotes(
       });
     }
 
-    await pqueue.addAll(
+    // Submit all export requests
+    pqueue.addAll(
       notes.map((note) => {
         return async () => {
           try {
-            const exportId = await exportNote(user, note, "html");
-            queue.set(
+            // Use retry logic for export requests
+            const exportId = await retryOrThrow(
+              () => exportNote(user, note, "html", stats),
+              {
+                maxRetries: Config.maxRetries,
+                shouldRetry: (error) => {
+                  // Retry on rate limits and transient errors
+                  const msg = error.message.toLowerCase();
+                  return (
+                    msg.includes("rate limit") ||
+                    msg.includes("429") ||
+                    msg.includes("timeout") ||
+                    msg.includes("network") ||
+                    msg.includes("econn")
+                  );
+                },
+                onRetry: (attempt, error) => {
+                  if (Config.debug) {
+                    console.error(
+                      `DEBUG: Retrying export for note ${note.globalId}, attempt ${attempt}: ${error.message}`
+                    );
+                  }
+                },
+              }
+            );
+
+            // Track the export request
+            exportRequests.set(exportId, { note, exportId, attempts: note.exportAttempts || 1 });
+
+            // Set timeout for this export
+            pendingExports.set(
               exportId,
               setTimeout(() => {
-                console.error(`DEBUG: Export ${exportId} timed out after 5 minutes`);
-                queue.delete(exportId);
-                if (queue.size === 0) {
-                  socket.close();
-                  resolve();
+                if (pendingExports.has(exportId)) {
+                  pendingExports.delete(exportId);
+                  failedExports.add(exportId);
+
+                  const req = exportRequests.get(exportId);
+                  if (req && stats) {
+                    stats.recordExportTimeout(req.note, exportId);
+                  }
+
+                  if (Config.debug) {
+                    console.error(
+                      `DEBUG: Export ${exportId} timed out after ${Config.exportTimeoutMs}ms`
+                    );
+                  }
+
+                  // Check if all exports are complete
+                  if (pendingExports.size === 0) {
+                    socket.close();
+                    resolve();
+                  }
                 }
-              }, 300000) as unknown as number
+              }, Config.exportTimeoutMs) as unknown as NodeJS.Timeout
             );
           } catch (e) {
-            console.error(`DEBUG: Failed to export note ${note.globalId}:`, e);
+            const error = e as Error;
+            console.error(`DEBUG: Failed to export note ${note.globalId}:`, error.message);
+            if (stats) {
+              stats.recordExportFailure(
+                note,
+                error.message.includes("rate limit") ? FailureReason.RATE_LIMITED : FailureReason.ERROR,
+                error.message,
+                note.exportAttempts || 1
+              );
+            }
+            // Mark as failed so we don't wait for it
+            failedExports.add(note.globalId);
           }
         };
       })
     );
 
-    if (spinner) spinner.text = `Waiting for download urls... (${queue.size} exports pending)`;
+    if (spinner) spinner.text = `Waiting for download urls... (${pendingExports.size} exports pending)`;
   });
 
-  console.error(`DEBUG: WebSocket closed. Exported: ${queue.size} (timed out), Received: ${messages.length} job:success events`);
+  console.error(
+    `DEBUG: WebSocket closed. Exported: ${completedExports.size}, Failed: ${failedExports.size}, Timed out: ${pendingExports.size}`
+  );
 
   if (spinner) spinner.text = `Starting download`;
 
+  // Download completed exports
   let done = 0;
-  const pqueue = new PQueue({ concurrency: 8 });
+  const pqueue = new PQueue({ concurrency: Config.downloadConcurrency });
   await pqueue.addAll(
     messages.map((event) => {
       return async () => {
@@ -240,21 +425,35 @@ export async function downloadNotes(
           fileName: filename,
           directory: outputPath,
           shouldBufferResponse: true,
-          timeout: 60000,
+          timeout: Config.downloadTimeoutMs,
         });
 
-        await downloader.download();
+        try {
+          await downloader.download();
 
-        if (spinner)
-          spinner.text = `Downloaded ${event.message.fileName} (${++done}/${
-            messages.length
-          })`;
+          if (stats) stats.recordDownloadSuccess();
 
-        event.note.path = filename;
+          if (spinner)
+            spinner.text = `Downloaded ${event.message.fileName} (${++done}/${
+              messages.length
+            })`;
+
+          event.note.path = filename;
+        } catch (e) {
+          const error = e as Error;
+          if (stats) {
+            stats.recordDownloadFailure(event.note, error.message);
+          }
+          if (Config.debug) {
+            console.error(`DEBUG: Failed to download ${filename}:`, error.message);
+          }
+        }
       };
     })
   );
 
   const notesWithPath = notes.filter((n) => n.path).length;
-  console.error(`DEBUG: Download phase complete. ${notesWithPath}/${notes.length} notes have path property set`);
+  console.error(
+    `DEBUG: Download phase complete. ${notesWithPath}/${notes.length} notes have path property set`
+  );
 }

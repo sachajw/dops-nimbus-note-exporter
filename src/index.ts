@@ -36,16 +36,18 @@ import ora, { Ora } from "ora";
 import { directory } from "tempy";
 import { Folder, getFolders } from "./api/folders";
 import { Note } from "./api/types";
+import { Config } from "./api/config";
+import { StatsTracker } from "./api/stats";
 
 async function main() {
   const outputPath = directory();
   const extractPath = directory();
-  const finalOutputPath = process.env.NIMBUS_OUTPUT_PATH || "./nimbus-export.zip";
-  const workspaceFilter = process.env.NIMBUS_WORKSPACE;
-  const folderFilter = process.env.NIMBUS_FOLDER;
+  const finalOutputPath = Config.outputPath;
+  const workspaceFilter = Config.workspace;
+  const folderFilter = Config.folder;
 
-  let email = process.env.NIMBUS_EMAIL;
-  let password = process.env.NIMBUS_PASSWORD;
+  let email = Config.email;
+  let password = Config.password;
 
   if (!email) {
     const response = await prompts({
@@ -160,7 +162,10 @@ async function main() {
       ).flat()
   );
 
+  // Create stats tracker after we know the total note count
   let notes = allNotes;
+  const stats = new StatsTracker(notes.length);
+
   if (folderFilter) {
     notes = allNotes.filter((n) => filteredFolderIds.has(n.parentId));
     if (notes.length === 0) {
@@ -178,7 +183,7 @@ async function main() {
   await workWithSpinner(
     "Downloading notes...",
     () => `${notes.length} downloaded.`,
-    (spinner) => downloadNotes(user, notes, outputPath, spinner)
+    (spinner) => downloadNotes(user, notes, outputPath, spinner, stats)
   );
 
   await workWithSpinner(
@@ -233,7 +238,25 @@ async function main() {
   await rm(extractPath, { recursive: true, force: true });
   await rm(outputPath, { recursive: true, force: true });
 
-  ora().start().succeed("All done.");
+  // Mark export complete and display summary
+  stats.markComplete();
+
+  // Display export statistics
+  console.log(stats.getSummary());
+
+  // Final success/failure message
+  if (stats.isPerfect()) {
+    ora().start().succeed("All notes exported successfully!");
+  } else {
+    const successRate = stats.getSuccessRate();
+    if (successRate >= 90) {
+      ora().start().succeed(`Export completed with ${successRate.toFixed(1)}% success rate`);
+    } else if (successRate >= 50) {
+      ora().start().warn(`Export completed with ${successRate.toFixed(1)}% success rate`);
+    } else {
+      ora().start().fail(`Export completed with ${successRate.toFixed(1)}% success rate`);
+    }
+  }
 }
 main();
 

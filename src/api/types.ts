@@ -31,6 +31,11 @@ export interface Note {
   attachments?: Attachment[];
   parents?: string[];
   workspace?: string;
+
+  // Export tracking
+  exportId?: string;
+  exportAttempts?: number;
+  exportFailed?: boolean;
 }
 
 export interface Attachment {

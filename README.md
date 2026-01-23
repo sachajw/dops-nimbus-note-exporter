@@ -19,6 +19,15 @@ This tool supports exporting of the following data types from Nimbus Note:
 5. Data across unlimited workspaces
 6. Data across unlimited organizations
 
+### New Enhancements (v1.4.0+)
+
+- **Rate Limiting**: Token bucket algorithm to prevent API overload
+- **Retry Logic**: Exponential backoff for transient failures
+- **Export Statistics**: Comprehensive summary of success/fail/timeout counts
+- **Configurable Concurrency**: Tune parallel requests for your network
+- **Job Failure Handling**: Proper handling of `job:failure` WebSocket events
+- **Secure Credential Handling**: Credentials properly JSON-encoded
+
 ## Getting started
 
 ### Installation
@@ -41,11 +50,13 @@ And you'll be prompted for your email & password. Your credentials are required 
 
 > **Note:** You should not enter important credentials anywhere EXCEPT the official website. However, if you are required to do so then be CAREFUL and make sure your login details are not going anywhere you don't want/intend.
 
-After login, everything is automated. At the end you should have a `nimbus-export.zip` file in the directory where you ran the command.
+After login, everything is automated. At the end you should have a `nimbus-export.zip` file in the directory where you ran the command, along with a comprehensive export summary.
 
 ### Environment Variables
 
 You can configure the tool using environment variables or a `.env` file:
+
+#### Basic Configuration
 
 | Variable             | Description                                 | Default                |
 | -------------------- | ------------------------------------------- | ---------------------- |
@@ -55,14 +66,85 @@ You can configure the tool using environment variables or a `.env` file:
 | `NIMBUS_FOLDER`      | Filter to export specific folder by name    | Exports all folders    |
 | `NIMBUS_OUTPUT_PATH` | Custom output path for the zip file         | `./nimbus-export.zip`  |
 
+#### Performance Tuning
+
+| Variable                   | Default | Description                                    |
+| -------------------------- | ------- | ---------------------------------------------- |
+| `NIMBUS_TAG_CONCURRENCY`   | 16      | Parallel tag fetch requests                    |
+| `NIMBUS_EXPORT_CONCURRENCY` | 10      | Parallel export requests to WebSocket          |
+| `NIMBUS_DOWNLOAD_CONCURRENCY` | 8    | Parallel file downloads                        |
+| `NIMBUS_EXPORT_TIMEOUT`    | 300000  | Export timeout in milliseconds (5 minutes)     |
+| `NIMBUS_DOWNLOAD_TIMEOUT`  | 60000   | Download timeout in milliseconds (60 seconds)   |
+
+#### Retry Configuration
+
+| Variable                   | Default | Description                                    |
+| -------------------------- | ------- | ---------------------------------------------- |
+| `NIMBUS_MAX_RETRIES`       | 3       | Maximum retry attempts for failed requests      |
+| `NIMBUS_RETRY_INITIAL_DELAY` | 1000  | Initial retry delay in milliseconds            |
+| `NIMBUS_RETRY_MAX_DELAY`   | 30000   | Maximum retry delay in milliseconds (30 seconds) |
+
+#### Rate Limiting
+
+| Variable                    | Default | Description                                    |
+| --------------------------- | ------- | ---------------------------------------------- |
+| `NIMBUS_RATE_LIMIT_RPS`     | 10      | Requests per second (token bucket refill rate)  |
+| `NIMBUS_RATE_LIMIT_BURST`   | 20      | Burst size (max tokens available at once)       |
+
+#### Debugging
+
+| Variable         | Default | Description                                    |
+| ---------------- | ------- | ---------------------------------------------- |
+| `NIMBUS_DEBUG`   | false   | Enable verbose debug logging                   |
+
 Example `.env` file:
 
+```bash
+# Copy the example file to create your own
+cp .env.example .env
+
+# Then edit .env with your credentials and preferences
 ```
-NIMBUS_EMAIL=your-email@example.com
-NIMBUS_PASSWORD=your-password
-NIMBUS_WORKSPACE=Platform Engineering
-NIMBUS_OUTPUT_PATH=./my-export.zip
+
+See `.env.example` for all available options with descriptions.
+
+### Export Statistics
+
+After each export, you'll see a comprehensive summary:
+
 ```
+============================================================
+EXPORT SUMMARY
+============================================================
+Total notes:           150
+Successful exports:    145
+Failed exports:        3
+Timed out exports:     2
+Success rate:          96.7%
+Duration:              3m 45s
+
+Tag fetching:
+  Successful:          145/150
+  Failed:              5/150
+
+Downloads:
+  Successful:          145/145
+
+Failed exports (5):
+  - Note 1 (abc12345...)
+    Reason: timeout
+    Attempts: 4
+  - Note 2 (def67890...)
+    Reason: error - Rate limit exceeded
+    Attempts: 3
+============================================================
+```
+
+The tool will also indicate overall success:
+- 🟢 **Green**: All notes exported successfully (100%)
+- 🟡 **Yellow**: 90%+ success rate
+- 🟠 **Orange**: 50-90% success rate
+- 🔴 **Red**: <50% success rate
 
 ### Known Limitations
 
@@ -72,6 +154,8 @@ NIMBUS_OUTPUT_PATH=./my-export.zip
 - However, the WebSocket `job:success` events may never be sent, causing exports to timeout
 - This can occur even with small batches (10-100 notes)
 - The issue appears to be account-specific or domain-specific rather than strictly size-related
+- The tool pauses when it hits the configured rate limit (10 requests/second). This is the      
+  expected behavior to prevent overwhelming the Nimbus API.
 
 **Possible Causes**:
 
@@ -83,17 +167,26 @@ NIMBUS_OUTPUT_PATH=./my-export.zip
 
 1. **Export by folder**: Use `NIMBUS_FOLDER` to export smaller subsets of notes
 
-   ```
+   ```shell
    NIMBUS_WORKSPACE="My Workspace" NIMBUS_FOLDER="Subfolder" nimbus-note-exporter
    ```
 
-2. **Export smaller workspaces**: If you have multiple workspaces, export them individually using `NIMBUS_WORKSPACE`
+2. **Reduce concurrency**: Lower `NIMBUS_EXPORT_CONCURRENCY` to 3-5
 
-3. **Manual export via web client**: Check if the Nimbus Note web interface has export options available
+   ```shell
+   NIMBUS_EXPORT_CONCURRENCY=3 nimbus-note-exporter
+   ```
 
-4. **Contact Nimbus Note support**: Request bulk export or ask about API access for your account
+3. **Increase timeout**: Raise `NIMBUS_EXPORT_TIMEOUT` for slower connections
 
-5. **Try a different account**: If you have multiple Nimbus accounts, test if exports work on another
+   ```shell
+   NIMBUS_EXPORT_TIMEOUT=600000 nimbus-note-exporter
+   ```
+
+4. **Export smaller workspaces**: If you have multiple workspaces, export them individually using `NIMBUS_WORKSPACE`
+5. **Manual export via web client**: Check if the Nimbus Note web interface has export options available
+6. **Contact Nimbus Note support**: Request bulk export or ask about API access for your account
+7. **Try a different account**: If you have multiple Nimbus accounts, test if exports work on another
 
 ### Local Data Extraction (Advanced)
 
@@ -101,7 +194,7 @@ If the export API is not working for your account, you can extract note metadata
 
 **macOS Local Data Location:**
 
-```
+```shell
 ~/Library/Application Support/nimbus-note-desktop/Local Storage/leveldb/
 ```
 
@@ -177,12 +270,31 @@ jimmy-darwin-arm64 cli /path/to/nimbus-export.zip
 
 Jimmy expects the same ZIP structure that this tool produces:
 
-```
+```plaintext
 <note_id>/
   ├── note.html
   ├── metadata.json
   └── assets/
 ```
+
+### Example
+┌───────────────┬────────────────────────────────────────────┐                                                                                             
+  │     Step      │                   Result                   │                                                                                             
+  ├───────────────┼────────────────────────────────────────────┤                                                                                             
+  │ Login         │ ✅ sachajw.nimbusweb.me                    │                                                                                             
+  ├───────────────┼────────────────────────────────────────────┤                                                                                             
+  │ Organizations │ 1                                          │                                                                                             
+  ├───────────────┼────────────────────────────────────────────┤                                                                                             
+  │ Workspaces    │ Filtered to "Platform Engineering" (1)     │                                                                                             
+  ├───────────────┼────────────────────────────────────────────┤                                                                                             
+  │ Folders       │ 4,580                                      │                                                                                             
+  ├───────────────┼────────────────────────────────────────────┤                                                                                             
+  │ Attachments   │ 59,695                                     │                                                                                             
+  ├───────────────┼────────────────────────────────────────────┤                                                                                             
+  │ Notes         │ 10,000 (in Platform Engineering workspace) │                                                                                             
+  ├───────────────┼────────────────────────────────────────────┤                                                                                             
+  │ WebSocket     │ ✅ Connected                               │                                                                                             
+  └───────────────┴────────────────────────────────────────────┘
 
 ### Test Results Summary
 
@@ -203,40 +315,48 @@ This tool interacts with several Nimbus Note internal APIs. Understanding these 
 
 **1. Authentication Flow**
 
-- `POST /api/auth/login` - Returns `sessionId` and user's `domain` (e.g., `sachajw.nimbusweb.me`)
+- `POST /auth/api/auth` - Returns `sessionId` and user's `domain` (e.g., `sachajw.nimbusweb.me`)
 - All subsequent requests include the session cookie
+- **Enhanced**: Credentials are now properly JSON-encoded for security
 
 **2. Metadata Fetching** (Works Reliably)
 
-- `GET /api/teams/getall` - Fetches organizations
-- `GET /api/workspaces/list` - Fetches workspaces
-- `GET /api/folders/list` - Fetches folder hierarchy
-- `GET /api/notes/list` - Fetches note metadata with tags
+- `GET /api/organizations` - Fetches organizations
+- `GET /api/workspaces/{orgId}` - Fetches workspaces
+- `GET /api/workspaces/{workspaceId}/notes?filter={"type":"folder"}` - Fetches folders
+- `GET /api/workspaces/{workspaceId}/notes` - Fetches note metadata with tags
+- **Enhanced**: All requests now support rate limiting and automatic retry
 
 **3. Export Request** (Accepts but May Fail)
 
-- `POST /api/bulk/export/add` - Submits bulk export request
-- Request body: `{ "noteGlobalIds": ["id1", "id2", ...], "format": "html" }`
-- Response: `{ "exportId": "..." }` - **This always succeeds**
+- `POST /api/workspaces/{workspaceId}/notes/{noteId}/export` - Submits export request
+- Request body: `{ format: "html", ... }`
+- Response: `{ id: "..." }` - **This always succeeds**
+- **Enhanced**: Automatic retry on rate limits and transient errors
 
 **4. Export Completion** (Fails for Some Accounts)
 
 - Uses WebSocket connection (`socket.io-client`) to listen for events
-- Expected event: `job:success` with `{ "exportId": "..." }`
-- **Failure mode**: The export job is queued on the server, but the success event is never sent
-- The tool waits up to 5 minutes (configurable) before timing out
+- Expected events: `job:success` and `job:failure`
+- **Enhanced**: Now handles both success and failure events properly
+- **Failure mode**: The export job is queued on the server, but events are never sent
+- The tool waits up to `NIMBUS_EXPORT_TIMEOUT` (default 5 minutes) before timing out
 
 **5. Download** (Works When Export Succeeds)
 
-- `GET /api/bulk/export/download?exportId=...` - Downloads the generated ZIP file
+- Downloads from the URL provided in `job:success` event
 - Each note is extracted, enriched with `metadata.json`, and re-packaged
+- **Enhanced**: Failed downloads are tracked in export statistics
 
 **What This Means**:
 
 - The filtering logic (folder/workspace) works correctly - the tool successfully identifies which notes to export
 - The API properly accepts export requests
-- The failure occurs server-side when Nimbus processes the export queue and should emit the completion event
+- Rate limiting prevents overwhelming the Nimbus servers
+- Retry logic handles transient network issues
+- The failure occurs server-side when Nimbus processes the export queue and should emit completion events
 - This suggests an account-specific limitation or server-side issue, not a bug in this tool
+- The Nimbus API accepted all 10,000 export requests, but only sent job:success events for 974 of them.The remaining 9,026 exports timed out after waiting 5 minutes each for completion events that never came as my career depends on it
 
 ## How it works?
 
@@ -313,7 +433,7 @@ This script only connects to the official Nimbus Note servers and does not send 
 
 ## License
 
-```
+```plaintext
 This file is part of the nimbus-note-exporter project
 
 Copyright (C) 2023 Abdullah Atta

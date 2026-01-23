@@ -36,7 +36,7 @@ export async function login(email: string, password: string): Promise<User> {
   const response = await request({
     endpoint: "/auth/api/auth",
     method: "POST",
-    body: `{"login":"${email}","password":"${password}"}`,
+    body: JSON.stringify({ login: email, password }),
     json: true,
   });
   const json = (await response.json()) as LoginResponse;
