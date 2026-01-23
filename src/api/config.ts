@@ -98,4 +98,15 @@ export class Config {
   static get debug(): boolean {
     return process.env.NIMBUS_DEBUG === "true" || process.env.NIMBUS_DEBUG === "1";
   }
+
+  // WORKAROUND: Extended wait time for delayed job:success events (in milliseconds)
+  static get extendedWaitMs(): number {
+    const val = process.env.NIMBUS_EXTENDED_WAIT;
+    return val ? Math.max(0, parseInt(val, 10)) : 600000; // Default 10 minutes
+  }
+
+  // WORKAROUND: Enable URL prediction recovery for timed-out exports
+  static get enableUrlPrediction(): boolean {
+    return process.env.NIMBUS_ENABLE_URL_PREDICTION !== "false"; // Default true
+  }
 }

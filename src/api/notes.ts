@@ -205,6 +205,131 @@ export async function exportNote(
   }
 }
 
+// WORKAROUND: Try to recover timed-out exports by predicting and verifying URLs
+interface RecoveredExport {
+  message: { uuid: string; fileName: string; fileUrl: string };
+  note: Note;
+}
+
+async function recoverTimedOutExports(
+  user: User,
+  exportIds: string[],
+  exportRequests: Map<string, ExportRequest>,
+  successfulUrlPatterns: Map<string, string>,
+  stats?: StatsTracker,
+  spinner?: Ora
+): Promise<RecoveredExport[]> {
+  const recovered: RecoveredExport[] = [];
+
+  // WORKAROUND: Learn URL patterns from successful exports
+  // Extract the URL template by replacing the export ID with a placeholder
+  const learnedPatterns: string[] = [];
+  for (const [successExportId, successUrl] of successfulUrlPatterns.entries()) {
+    // Try to find where the exportId appears in the URL
+    if (successUrl.includes(successExportId)) {
+      const template = successUrl.replace(successExportId, "{exportId}");
+      learnedPatterns.push(template);
+      if (Config.debug) {
+        console.error(`DEBUG: Learned URL pattern: ${template}`);
+      }
+    }
+  }
+
+  // Build URL patterns to try (learned patterns first, then fallback patterns)
+  const urlPatterns: ((exportId: string, note: Note) => string)[] = [
+    // Learned patterns from successful exports (highest priority)
+    ...learnedPatterns.map((template) => (exportId: string) => template.replace("{exportId}", exportId)),
+
+    // Pattern 1: Direct download URL pattern (most common)
+    (exportId, note) => `https://${user.domain}/api/downloads/get?file=${exportId}`,
+
+    // Pattern 2: Alternative download endpoint
+    (exportId, note) => `https://${user.domain}/api/exports/${exportId}/download`,
+
+    // Pattern 3: Export storage URL
+    (exportId, note) => `https://${user.domain}/exports/${exportId}.zip`,
+
+    // Pattern 4: CDN-style URL
+    (exportId, note) => `https://${user.domain}/files/exports/${exportId}`,
+
+    // Pattern 5: Note-specific export URL
+    (exportId, note) => `https://${user.domain}/api/workspaces/${note.workspaceId}/notes/${note.globalId}/export/${exportId}`,
+
+    // Pattern 6: Hash-based URL (common in cloud storage)
+    (exportId, note) => `https://${user.domain}/s/${exportId}`,
+
+    // Pattern 7: Storage provider pattern (AWS S3-style)
+    (exportId, note) => `https://s3.amazonaws.com/nimbus-exports/${exportId}.zip`,
+
+    // Pattern 8: Alternative storage domain
+    (exportId, note) => `https://nimbus.web.cdn/libs/${exportId}`,
+  ];
+
+  for (const exportId of exportIds) {
+    const req = exportRequests.get(exportId);
+    if (!req) continue;
+
+    const note = req.note;
+    let found = false;
+
+    // Try each URL pattern
+    for (let patternIdx = 0; patternIdx < urlPatterns.length; patternIdx++) {
+      const predictedUrl = urlPatterns[patternIdx](exportId, note);
+
+      if (Config.debug) {
+        console.error(`DEBUG: Trying pattern ${patternIdx + 1} for ${exportId}: ${predictedUrl}`);
+      }
+
+      try {
+        // Try HEAD request first to check if URL exists
+        const isAbsoluteUrl = predictedUrl.startsWith("http");
+        const response = await request({
+          user,
+          endpoint: isAbsoluteUrl ? predictedUrl.replace(`https://${user.domain}`, "") : predictedUrl,
+          method: "HEAD",
+        });
+
+        if (response.ok || response.status === 200 || response.status === 302 || response.status === 301) {
+          // URL exists! Try to construct the message
+          const fileName = `${note.title || "untitled"}.zip`;
+
+          recovered.push({
+            message: {
+              uuid: exportId,
+              fileName: fileName,
+              fileUrl: predictedUrl,
+            },
+            note,
+          });
+
+          if (stats) {
+            stats.recordExportSuccess(note);
+          }
+
+          if (Config.debug) {
+            console.error(`DEBUG: ✓ Recovered export ${exportId} using pattern ${patternIdx + 1}`);
+          }
+
+          found = true;
+          break;
+        }
+      } catch (e) {
+        // URL pattern didn't work, try next one
+        if (Config.debug) {
+          console.error(`DEBUG: ✗ Pattern ${patternIdx + 1} failed for ${exportId}`);
+        }
+        continue;
+      }
+    }
+
+    if (spinner && found) {
+      spinner.text = `Recovered ${recovered.length}/${exportIds.length} timed-out exports...`;
+    }
+  }
+
+  return recovered;
+}
+
 export async function downloadNotes(
   user: User,
   notes: Note[],
@@ -243,9 +368,29 @@ export async function downloadNotes(
   // Track export requests
   const exportRequests: Map<string, ExportRequest> = new Map();
 
+  // WORKAROUND: Track successful export URLs to learn patterns
+  const successfulUrlPatterns: Map<string, string> = new Map(); // exportId -> fileUrl
+
+  // WORKAROUND: Track ALL WebSocket events for debugging
+  const allEvents: { eventName: string; data: any; timestamp: Date }[] = [];
+  const wildcardListener = (eventName: string, data: any) => {
+    if (eventName !== "disconnect" && eventName !== "socketConnect:userConnected") {
+      allEvents.push({ eventName, data, timestamp: new Date() });
+      if (Config.debug) {
+        console.error(`DEBUG: Received WebSocket event: ${eventName}`, JSON.stringify(data).substring(0, 500));
+      }
+    }
+  };
+  socket.onAny(wildcardListener);
+
   await new Promise<void>((resolve, reject) => {
     // Handle successful exports
     socket.on("job:success", async (event: JobSuccessEvent) => {
+      // WORKAROUND: Record successful URL pattern for learning
+      if (event?.message?.uuid && event?.message?.fileUrl) {
+        successfulUrlPatterns.set(event.message.uuid, event.message.fileUrl);
+      }
+
       if (event?.message?.fileUrl && pendingExports.has(event?.message?.uuid)) {
         clearTimeout(pendingExports.get(event?.message?.uuid)!);
         pendingExports.delete(event?.message?.uuid);
@@ -398,11 +543,55 @@ export async function downloadNotes(
     );
 
     if (spinner) spinner.text = `Waiting for download urls... (${pendingExports.size} exports pending)`;
+
+    // WORKAROUND: Extended wait phase for delayed events
+    // Some exports may complete after the initial timeout
+    pqueue.onIdle().then(async () => {
+      // All export requests have been submitted
+      if (Config.debug) {
+        console.error(`DEBUG: All export requests submitted. ${pendingExports.size} still pending.`);
+      }
+
+      // Don't resolve immediately - wait for extended period to catch delayed events
+      // The server might send job:success events after a significant delay
+      const extendedWaitMs = Config.extendedWaitMs;
+      setTimeout(() => {
+        if (pendingExports.size > 0) {
+          if (Config.debug) {
+            console.error(`DEBUG: Extended wait complete. ${pendingExports.size} exports still pending after ${extendedWaitMs}ms`);
+          }
+          // Force resolve after extended wait
+          socket.close();
+          resolve();
+        }
+      }, extendedWaitMs);
+    });
   });
 
   console.error(
     `DEBUG: WebSocket closed. Exported: ${completedExports.size}, Failed: ${failedExports.size}, Timed out: ${pendingExports.size}`
   );
+
+  // WORKAROUND: Try to recover timed-out exports by predicting URLs
+  if (pendingExports.size > 0 && Config.enableUrlPrediction) {
+    console.error(`DEBUG: Attempting to recover ${pendingExports.size} timed-out exports via URL prediction...`);
+    if (spinner) spinner.text = `Attempting to recover timed-out exports...`;
+
+    const timedOutExportIds = Array.from(pendingExports.keys());
+    const recovered = await recoverTimedOutExports(user, timedOutExportIds, exportRequests, successfulUrlPatterns, stats, spinner);
+
+    if (recovered.length > 0) {
+      console.error(`DEBUG: Successfully recovered ${recovered.length} exports via URL prediction!`);
+      // Add recovered exports to messages for download
+      for (const item of recovered) {
+        messages.push({ message: item.message, note: item.note });
+      }
+    }
+
+    // Log all unique event names we saw for debugging
+    const uniqueEvents = [...new Set(allEvents.map(e => e.eventName))];
+    console.error(`DEBUG: All WebSocket events received: ${uniqueEvents.join(", ")}`);
+  }
 
   if (spinner) spinner.text = `Starting download`;
 
@@ -412,9 +601,24 @@ export async function downloadNotes(
   await pqueue.addAll(
     messages.map((event) => {
       return async () => {
-        const filename = sanitize(event.message.fileName, {
+        // WORKAROUND: Truncate filenames to avoid ENAMETOOLONG errors
+        let filename = sanitize(event.message.fileName, {
           replacement: "-",
         });
+
+        // Truncate filename if too long (max 255 chars for most filesystems)
+        const maxLength = 200; // Conservative limit
+        if (filename.length > maxLength) {
+          const ext = path.extname(filename);
+          const nameWithoutExt = filename.substring(0, filename.lastIndexOf(ext));
+          filename = nameWithoutExt.substring(0, maxLength - ext.length) + ext;
+        }
+
+        // Use a hash-based fallback if still too long
+        if (filename.length > maxLength) {
+          const hash = Buffer.from(event.message.uuid).toString('base64').substring(0, 16);
+          filename = `note-${hash}.zip`;
+        }
 
         if (existsSync(path.join(outputPath, filename))) {
           await rm(path.join(outputPath, filename));

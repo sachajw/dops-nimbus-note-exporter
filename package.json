@@ -13,6 +13,7 @@
   "author": "Abdullah Atta <abdullahatta@streetwriters.co>",
   "license": "GPL-3.0-or-later",
   "devDependencies": {
+    "@types/archiver": "^7.0.0",
     "@types/isomorphic-fetch": "^0.0.36",
     "@types/node": "^16.11.10",
     "@types/prompts": "^2.4.4",
@@ -29,6 +30,7 @@
   "dependencies": {
     "@types/adm-zip": "^0.5.0",
     "adm-zip": "^0.5.10",
+    "archiver": "^7.0.1",
     "classic-level": "^3.0.0",
     "css-select": "^5.1.0",
     "dom-serializer": "^2.0.0",
@@ -48,6 +50,7 @@
     "prompts": "^2.4.2",
     "sanitize-filename": "^1.6.3",
     "socket.io-client": "^4.6.1",
+    "stream": "^0.0.3",
     "tempy": "^1.0.1"
   }
 }

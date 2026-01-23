@@ -30,6 +30,7 @@ import {
 } from "./api/teams";
 import ADMZip from "adm-zip";
 import { mkdir, rm, writeFile } from "fs/promises";
+import { createReadStream, createWriteStream } from "fs";
 import { fdir } from "fdir";
 import prompts from "prompts";
 import ora, { Ora } from "ora";
@@ -38,6 +39,8 @@ import { Folder, getFolders } from "./api/folders";
 import { Note } from "./api/types";
 import { Config } from "./api/config";
 import { StatsTracker } from "./api/stats";
+import archiver from "archiver";
+import { pipeline } from "stream/promises";
 
 async function main() {
   const outputPath = directory();
@@ -200,10 +203,18 @@ async function main() {
 
         spinner.text = `Extracting ${zipPath} to ${dir}`;
 
-        const zip = new ADMZip(zipPath);
-        await new Promise((resolve, reject) =>
-          zip.extractAllToAsync(dir, true, true, (err) =>
-            err ? reject(err) : resolve(undefined)
+        // WORKAROUND: Handle invalid filenames that adm-zip can't process
+        let zip: ADMZip | undefined;
+        try {
+          zip = new ADMZip(zipPath);
+        } catch (e: any) {
+          console.error(`Warning: Skipping invalid zip file: ${note.path} (${e.message})`);
+          continue;
+        }
+
+        await new Promise<void>((resolve, reject) =>
+          zip!.extractAllToAsync(dir, true, true, (err?: Error) =>
+            err ? reject(err) : resolve()
           )
         );
 
@@ -222,18 +233,53 @@ async function main() {
     }
   );
 
-  const zip = new ADMZip();
-  const files = new fdir()
-    .withRelativePaths()
-    .crawl(extractPath)
-    .sync();
+  // WORKAROUND: Use archiver with ZIP64 for large file counts (>65535)
+  await workWithSpinner(
+    "Creating final archive...",
+    () => `Archive created.`,
+    async (spinner) => {
+      const output = createWriteStream(finalOutputPath);
+      const archive = archiver("zip", {
+        zlib: { level: 9 },
+        // Enable ZIP64 to support >65535 files
+        store: false,
+      });
 
-  files.forEach((filePath) => {
-    const fullPath = path.join(extractPath, filePath);
-    zip.addLocalFile(fullPath, path.dirname(filePath));
-  });
+      return new Promise<void>((resolve, reject) => {
+        output.on("close", () => {
+          if (Config.debug) {
+            console.error(`DEBUG: Archive created: ${archive.pointer()} bytes`);
+          }
+          resolve();
+        });
 
-  await zip.writeZipPromise(finalOutputPath);
+        archive.on("error", (err) => {
+          reject(err);
+        });
+
+        archive.on("progress", (progress) => {
+          if (spinner) {
+            spinner.text = `Archiving ${progress.entries.processed} files...`;
+          }
+        });
+
+        archive.pipe(output);
+
+        // Add all files from extractPath
+        const files = new fdir()
+          .withRelativePaths()
+          .crawl(extractPath)
+          .sync() as string[];
+
+        for (const file of files) {
+          const fullPath = path.join(extractPath, file);
+          archive.file(fullPath, { name: file });
+        }
+
+        archive.finalize();
+      });
+    }
+  );
 
   await rm(extractPath, { recursive: true, force: true });
   await rm(outputPath, { recursive: true, force: true });
