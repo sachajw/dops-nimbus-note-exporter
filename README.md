@@ -65,11 +65,18 @@ NIMBUS_OUTPUT_PATH=./my-export.zip
 
 ### Known Limitations
 
-**Large Workspace Exports**: The Nimbus Note export API has known limitations when exporting very large workspaces (10,000+ notes):
+**Export API Reliability**: The Nimbus Note export API has known reliability issues that can affect exports of any size:
 
 - The API accepts export requests and returns export IDs
-- However, for large workspaces, the WebSocket `job:success` events are never sent
-- All exports eventually timeout (default 5 minutes per export)
+- However, the WebSocket `job:success` events may never be sent, causing exports to timeout
+- This can occur even with small batches (10-100 notes)
+- The issue appears to be account-specific or domain-specific rather than strictly size-related
+
+**Possible Causes**:
+
+- Account-level export quota exceeded
+- API changes/breakage for specific Nimbus domains (e.g., `*.nimbusweb.me`)
+- Nimbus Note has disabled or rate-limited bulk export functionality for certain accounts
 
 **Workarounds**:
 
@@ -80,7 +87,141 @@ NIMBUS_OUTPUT_PATH=./my-export.zip
 
 2. **Export smaller workspaces**: If you have multiple workspaces, export them individually using `NIMBUS_WORKSPACE`
 
-3. **Wait for API fixes**: The internal API behavior may change in the future; consider filing a support request with Nimbus Note for bulk export functionality
+3. **Manual export via web client**: Check if the Nimbus Note web interface has export options available
+
+4. **Contact Nimbus Note support**: Request bulk export or ask about API access for your account
+
+5. **Try a different account**: If you have multiple Nimbus accounts, test if exports work on another
+
+### Local Data Extraction (Advanced)
+
+If the export API is not working for your account, you can extract note metadata directly from the Nimbus Note desktop client's local storage. This provides a list of all note IDs and folder structure, though **note content still requires the export API**.
+
+**macOS Local Data Location:**
+```
+~/Library/Application Support/nimbus-note-desktop/Local Storage/leveldb/
+```
+
+**Extraction Script:**
+
+A proof-of-concept extraction script is included that can:
+- Extract note IDs from Local Storage (4,580+ notes found in testing)
+- Extract folder hierarchy and mappings
+- Provide workspace information
+
+To use:
+```bash
+# 1. Close Nimbus Note desktop client first (to unlock databases)
+# 2. Install dependencies
+npm install level
+
+# 3. Run the extraction script
+node extract-local-data.js
+```
+
+This creates a `nimbus-local-data/` directory with:
+- `all-data.json` - All extracted Local Storage data
+- `note-ids.json` - List of all note IDs (4,580+ found in testing)
+- `folder-tree.json` - Folder hierarchy structure
+- `folders.json` - Folder-to-note mappings
+
+**Important Notes:**
+- This only extracts **metadata** (note IDs, folder structure), not note content
+- Note content still requires the export API which may also fail
+- Individual note export was tested and has the same timeout issues as bulk export
+- A LevelDB viewer will not help with reading note content (it's stored in Chromium's proprietary IndexedDB format)
+
+**IndexedDB Investigation:**
+
+Additional investigation was performed to determine if note content could be extracted from IndexedDB (the browser's database for structured data):
+
+```bash
+# Scripts used for investigation
+# 1. inspect-indexeddb-puppeteer.js - Scans IndexedDB databases
+# 2. inspect-all-targets.js - Checks all CDP targets
+# 3. navigate-to-note.js - Tests if navigating to notes triggers caching
+```
+
+**Findings:**
+- Nimbus Note uses IndexedDB (`FusebaseIDB`) with a `pages` store
+- Only **1 entry** was found in IndexedDB (a serialized cache dump, not note content)
+- Navigating to specific note pages does **NOT** trigger local caching of note content
+- Note content is fetched from the server on-demand and NOT stored locally
+
+**Conclusion:** Note content cannot be extracted locally from the Nimbus Note desktop client. The application architecture requires fetching content from Nimbus servers via the API, and the export API failure for some accounts is a server-side limitation that cannot be bypassed through local data extraction.
+
+### Post-Export Conversion: Jimmy
+
+If you successfully export your notes, you can convert them to Markdown using [Jimmy](https://github.com/marph91/jimmy), a universal note converter that supports Nimbus Note:
+
+```bash
+# Install Jimmy
+# Download from: https://github.com/marph91/jimmy/releases
+
+# Convert exported Nimbus notes to Markdown
+jimmy-darwin-arm64 cli /path/to/nimbus-export.zip
+
+# The output is compatible with:
+# - Obsidian
+# - Joplin
+# - Any Markdown editor
+```
+
+Jimmy expects the same ZIP structure that this tool produces:
+```
+<note_id>/
+  ├── note.html
+  ├── metadata.json
+  └── assets/
+```
+
+### Test Results Summary
+
+Testing on an affected account (`sachajw.nimbusweb.me`):
+
+| Method | Notes Attempted | Result |
+|--------|-----------------|--------|
+| Bulk Export (10 notes) | 10 | Timeout - no `job:success` events |
+| Bulk Export (all notes) | 4,580 | Timeout - no `job:success` events |
+| Individual Export (5 notes) | 5 | Timeout - no `job:success` events |
+| Local Data Extraction | N/A | ✓ Successfully extracted 4,580 note IDs |
+
+**Conclusion**: The export API failure affects both bulk and individual exports for some accounts. The issue is server-side (Nimbus never sends completion events), not a bug in this tool.
+
+### API Behavior Details
+
+This tool interacts with several Nimbus Note internal APIs. Understanding these can help diagnose issues:
+
+**1. Authentication Flow**
+- `POST /api/auth/login` - Returns `sessionId` and user's `domain` (e.g., `sachajw.nimbusweb.me`)
+- All subsequent requests include the session cookie
+
+**2. Metadata Fetching** (Works Reliably)
+- `GET /api/teams/getall` - Fetches organizations
+- `GET /api/workspaces/list` - Fetches workspaces
+- `GET /api/folders/list` - Fetches folder hierarchy
+- `GET /api/notes/list` - Fetches note metadata with tags
+
+**3. Export Request** (Accepts but May Fail)
+- `POST /api/bulk/export/add` - Submits bulk export request
+- Request body: `{ "noteGlobalIds": ["id1", "id2", ...], "format": "html" }`
+- Response: `{ "exportId": "..." }` - **This always succeeds**
+
+**4. Export Completion** (Fails for Some Accounts)
+- Uses WebSocket connection (`socket.io-client`) to listen for events
+- Expected event: `job:success` with `{ "exportId": "..." }`
+- **Failure mode**: The export job is queued on the server, but the success event is never sent
+- The tool waits up to 5 minutes (configurable) before timing out
+
+**5. Download** (Works When Export Succeeds)
+- `GET /api/bulk/export/download?exportId=...` - Downloads the generated ZIP file
+- Each note is extracted, enriched with `metadata.json`, and re-packaged
+
+**What This Means**:
+- The filtering logic (folder/workspace) works correctly - the tool successfully identifies which notes to export
+- The API properly accepts export requests
+- The failure occurs server-side when Nimbus processes the export queue and should emit the completion event
+- This suggests an account-specific limitation or server-side issue, not a bug in this tool
 
 ## How it works?
 
