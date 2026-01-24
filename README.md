@@ -28,6 +28,17 @@ This tool supports exporting of the following data types from Nimbus Note:
 - **Job Failure Handling**: Proper handling of `job:failure` WebSocket events
 - **Secure Credential Handling**: Credentials properly JSON-encoded
 
+### New Enhancements (v1.5.0+)
+
+- **Resume Mode**: Skip already-exported notes from a previous archive (`NIMBUS_RESUME_FROM`)
+- **Retry-Only Mode**: Only retry specific failed notes from a JSON file (`NIMBUS_RETRY_ONLY`)
+- **Failed Notes Tracking**: Automatically saves failed note IDs to JSON for incremental retry
+- **URL Prediction**: Recovers timed-out exports by predicting download URLs from WebSocket events
+- **Extended Wait Phase**: Configurable extended wait period for delayed WebSocket events
+- **ZIP64 Support**: Handles archives with >65,535 files using the `archiver` library
+- **Filename Truncation**: Automatically truncates long filenames to prevent filesystem errors
+- **Wildcard Event Listener**: Catches all WebSocket events for better debugging and recovery
+
 ## Getting started
 
 ### Installation
@@ -90,6 +101,16 @@ You can configure the tool using environment variables or a `.env` file:
 | --------------------------- | ------- | ---------------------------------------------- |
 | `NIMBUS_RATE_LIMIT_RPS`     | 10      | Requests per second (token bucket refill rate)  |
 | `NIMBUS_RATE_LIMIT_BURST`   | 20      | Burst size (max tokens available at once)       |
+
+#### Resume & Retry
+
+| Variable                    | Default              | Description                                              |
+| --------------------------- | -------------------- | -------------------------------------------------------- |
+| `NIMBUS_RESUME_FROM`        | -                    | Path to existing archive to skip already-exported notes  |
+| `NIMBUS_RETRY_ONLY`         | -                    | Path to JSON file with note IDs to retry (skips others)  |
+| `NIMBUS_FAILED_NOTES_FILE`  | `./failed-notes.json`| Path to save failed note IDs for later retry             |
+| `NIMBUS_EXTENDED_WAIT`      | 600000               | Extended wait time (ms) for delayed WebSocket events     |
+| `NIMBUS_ENABLE_URL_PREDICTION` | true              | Enable URL prediction recovery for timed-out exports     |
 
 #### Debugging
 
@@ -165,28 +186,61 @@ The tool will also indicate overall success:
 
 **Workarounds**:
 
-1. **Export by folder**: Use `NIMBUS_FOLDER` to export smaller subsets of notes
+1. **Resume Mode (Recommended)**: Run multiple export passes, skipping already-exported notes
 
    ```shell
-   NIMBUS_WORKSPACE="My Workspace" NIMBUS_FOLDER="Subfolder" nimbus-note-exporter
+   # First export attempt
+   NIMBUS_OUTPUT_PATH=./export-pass1.zip nimbus-note-exporter
+
+   # Second pass - resume from first archive
+   NIMBUS_RESUME_FROM=./export-pass1.zip NIMBUS_OUTPUT_PATH=./export-pass2.zip nimbus-note-exporter
+
+   # Third pass - resume from second archive
+   NIMBUS_RESUME_FROM=./export-pass2.zip NIMBUS_OUTPUT_PATH=./export-pass3.zip nimbus-note-exporter
    ```
 
-2. **Reduce concurrency**: Lower `NIMBUS_EXPORT_CONCURRENCY` to 3-5
+2. **Retry-Only Mode**: After an export, retry only the failed notes
+
+   ```shell
+   # The tool automatically saves failed note IDs to ./failed-notes.json
+   # Retry only those specific notes:
+   NIMBUS_RETRY_ONLY=./failed-notes.json NIMBUS_OUTPUT_PATH=./retry.zip nimbus-note-exporter
+   ```
+
+3. **Extended Wait Time**: Increase wait time for delayed WebSocket events
+
+   ```shell
+   # Wait up to 15 minutes for delayed events (default: 10 minutes)
+   NIMBUS_EXTENDED_WAIT=900000 nimbus-note-exporter
+   ```
+
+4. **Reduce concurrency**: Lower `NIMBUS_EXPORT_CONCURRENCY` to reduce server load
 
    ```shell
    NIMBUS_EXPORT_CONCURRENCY=3 nimbus-note-exporter
    ```
 
-3. **Increase timeout**: Raise `NIMBUS_EXPORT_TIMEOUT` for slower connections
+5. **Increase timeout**: Raise `NIMBUS_EXPORT_TIMEOUT` for slower connections
 
    ```shell
    NIMBUS_EXPORT_TIMEOUT=600000 nimbus-note-exporter
    ```
 
-4. **Export smaller workspaces**: If you have multiple workspaces, export them individually using `NIMBUS_WORKSPACE`
-5. **Manual export via web client**: Check if the Nimbus Note web interface has export options available
-6. **Contact Nimbus Note support**: Request bulk export or ask about API access for your account
-7. **Try a different account**: If you have multiple Nimbus accounts, test if exports work on another
+6. **Export by folder**: Use `NIMBUS_FOLDER` to export smaller subsets of notes
+
+   ```shell
+   NIMBUS_WORKSPACE="My Workspace" NIMBUS_FOLDER="Subfolder" nimbus-note-exporter
+   ```
+
+7. **Combine archives**: After multiple passes, combine all archives into one
+
+   ```shell
+   # Extract all archives to a combined directory
+   mkdir combined && for z in export-pass*.zip; do unzip -q "$z" -d combined/; done
+
+   # Create final combined archive
+   cd combined && zip -rq ../nimbus-export-COMPLETE.zip . && cd ..
+   ```
 
 ### Local Data Extraction (Advanced)
 
@@ -251,6 +305,41 @@ Additional investigation was performed to determine if note content could be ext
 
 **Conclusion:** Note content cannot be extracted locally from the Nimbus Note desktop client. The application architecture requires fetching content from Nimbus servers via the API, and the export API failure for some accounts is a server-side limitation that cannot be bypassed through local data extraction.
 
+### Failed Notes Tracking
+
+After each export, the tool automatically saves failed note IDs to a JSON file (default: `./failed-notes.json`):
+
+```json
+{
+  "timestamp": "2026-01-24T00:10:46.859Z",
+  "totalAttempted": 646,
+  "successful": 639,
+  "failed": 7,
+  "noteIds": [
+    "5Ps6WWyP4If5AZ3E",
+    "6M4LBJPiGRG7jKYd",
+    "GDHHkp6Uw5t2akrg"
+  ]
+}
+```
+
+Use this file with `NIMBUS_RETRY_ONLY` to retry only the failed notes:
+
+```shell
+NIMBUS_RETRY_ONLY=./failed-notes.json nimbus-note-exporter
+```
+
+### Unrecoverable Notes
+
+Some notes may fail with server-side errors that cannot be resolved by retrying:
+
+| Error | Meaning |
+|-------|---------|
+| `TypeError: _this2.getPreviews(...).then is not a function` | Note has corrupted preview data |
+| `ReferenceError: editorJsonpCallbackRegistry is not defined` | Note uses unsupported editor features |
+
+These errors occur inside Nimbus's server-side export code. The only solution is to contact Nimbus support with the specific note IDs.
+
 ### Post-Export Conversion: Jimmy
 
 If you successfully export your notes, you can convert them to Markdown using [Jimmy](https://github.com/marph91/jimmy), a universal note converter that supports Nimbus Note:
@@ -278,36 +367,56 @@ Jimmy expects the same ZIP structure that this tool produces:
 ```
 
 ### Example
-┌───────────────┬────────────────────────────────────────────┐                                                                                             
-  │     Step      │                   Result                   │                                                                                             
-  ├───────────────┼────────────────────────────────────────────┤                                                                                             
-  │ Login         │ ✅ sachajw.nimbusweb.me                    │                                                                                             
-  ├───────────────┼────────────────────────────────────────────┤                                                                                             
-  │ Organizations │ 1                                          │                                                                                             
-  ├───────────────┼────────────────────────────────────────────┤                                                                                             
-  │ Workspaces    │ Filtered to "Platform Engineering" (1)     │                                                                                             
-  ├───────────────┼────────────────────────────────────────────┤                                                                                             
-  │ Folders       │ 4,580                                      │                                                                                             
-  ├───────────────┼────────────────────────────────────────────┤                                                                                             
-  │ Attachments   │ 59,695                                     │                                                                                             
-  ├───────────────┼────────────────────────────────────────────┤                                                                                             
-  │ Notes         │ 10,000 (in Platform Engineering workspace) │                                                                                             
-  ├───────────────┼────────────────────────────────────────────┤                                                                                             
-  │ WebSocket     │ ✅ Connected                               │                                                                                             
-  └───────────────┴────────────────────────────────────────────┘
+
+**Initial Export:**
+
+```
+┌───────────────┬────────────────────────────────────────────┐
+│     Step      │                   Result                   │
+├───────────────┼────────────────────────────────────────────┤
+│ Login         │ ✅ sachajw.nimbusweb.me                    │
+├───────────────┼────────────────────────────────────────────┤
+│ Organizations │ 1                                          │
+├───────────────┼────────────────────────────────────────────┤
+│ Workspaces    │ Filtered to "Platform Engineering" (1)     │
+├───────────────┼────────────────────────────────────────────┤
+│ Folders       │ 4,582                                      │
+├───────────────┼────────────────────────────────────────────┤
+│ Attachments   │ 59,735                                     │
+├───────────────┼────────────────────────────────────────────┤
+│ Notes         │ 10,000 (in Platform Engineering workspace) │
+├───────────────┼────────────────────────────────────────────┤
+│ WebSocket     │ ✅ Connected                               │
+└───────────────┴────────────────────────────────────────────┘
+```
+
+**Multi-Pass Export Results:**
+
+| Pass | Archive | Size | Notes Exported | Cumulative |
+|------|---------|------|----------------|------------|
+| 1 | nimbus-export-pe.zip | 3.0 GB | 2,625 | 2,625 |
+| 2 | nimbus-export-retry.zip | 4.1 GB | 3,381 | 6,006 |
+| 3 | nimbus-export-retry2.zip | 3.9 GB | 3,348 | 9,354 |
+| 4 | nimbus-export-retry3.zip | 724 MB | 639 | 9,993 |
+| 5 | nimbus-export-final.zip | 892 KB | 1 | 9,994 |
+| **Combined** | **nimbus-export-COMPLETE.zip** | **12 GB** | **9,994** | **99.94%** |
 
 ### Test Results Summary
 
-Testing on an affected account (`sachajw.nimbusweb.me`):
+Testing on an affected account (`sachajw.nimbusweb.me`) with 10,000 notes:
 
-| Method                      | Notes Attempted | Result                                  |
-| --------------------------- | --------------- | --------------------------------------- |
-| Bulk Export (10 notes)      | 10              | Timeout - no `job:success` events       |
-| Bulk Export (all notes)     | 4,580           | Timeout - no `job:success` events       |
-| Individual Export (5 notes) | 5               | Timeout - no `job:success` events       |
-| Local Data Extraction       | N/A             | ✓ Successfully extracted 4,580 note IDs |
+| Method                      | Notes Attempted | Result                                      |
+| --------------------------- | --------------- | ------------------------------------------- |
+| Initial Bulk Export         | 10,000          | 2,625 exported (26.3%) - many timeouts      |
+| Retry Pass 1 (resume mode)  | 7,375           | 3,381 additional (cumulative: 6,006)        |
+| Retry Pass 2 (resume mode)  | 3,994           | 3,348 additional (cumulative: 9,354)        |
+| Retry Pass 3 (retry-only)   | 646             | 639 additional (cumulative: 9,993)          |
+| Final Retry (7 notes)       | 7               | 1 additional (cumulative: 9,994)            |
+| **Final Result**            | **10,000**      | **9,994 exported (99.94% success rate)**    |
 
-**Conclusion**: The export API failure affects both bulk and individual exports for some accounts. The issue is server-side (Nimbus never sends completion events), not a bug in this tool.
+**Success Story**: Using the resume mode and retry-only features, we achieved a **99.94% success rate** on an account where the initial export only captured 26.3% of notes. The remaining 6 notes have server-side bugs in Nimbus's export code (JavaScript errors like `TypeError` and `ReferenceError`).
+
+**Conclusion**: While the Nimbus export API is unreliable (only ~10-30% of exports succeed on first attempt), the incremental retry approach can recover nearly all notes through multiple passes.
 
 ### API Behavior Details
 
@@ -356,7 +465,18 @@ This tool interacts with several Nimbus Note internal APIs. Understanding these 
 - Retry logic handles transient network issues
 - The failure occurs server-side when Nimbus processes the export queue and should emit completion events
 - This suggests an account-specific limitation or server-side issue, not a bug in this tool
-- The Nimbus API accepted all 10,000 export requests, but only sent job:success events for 974 of them.The remaining 9,026 exports timed out after waiting 5 minutes each for completion events that never came as my career depends on it
+- **However**, using the resume mode and retry-only features, nearly all notes can be recovered through multiple passes
+
+**Recovery Strategy**:
+
+The Nimbus API is unreliable - on initial export, only ~10-30% of notes may succeed. However, running multiple retry passes consistently recovers more notes:
+
+1. **Pass 1**: ~25-30% success rate
+2. **Pass 2**: Additional ~30-35% recovered
+3. **Pass 3**: Additional ~30-35% recovered
+4. **Pass 4+**: Diminishing returns, but can recover remaining stragglers
+
+After 4-5 passes, expect **99%+ recovery rate**. The remaining ~0.1% are typically notes with server-side bugs in Nimbus's export code (JavaScript errors in their backend)
 
 ## How it works?
 
