@@ -71,54 +71,55 @@ You can configure the tool using environment variables or a `.env` file:
 
 #### Basic Configuration
 
-| Variable             | Description                                 | Default                |
-| -------------------- | ------------------------------------------- | ---------------------- |
-| `NIMBUS_EMAIL`       | Your Nimbus Note email                      | Prompts if not set     |
-| `NIMBUS_PASSWORD`    | Your Nimbus Note password                   | Prompts if not set     |
-| `NIMBUS_WORKSPACE`   | Filter to export specific workspace by name | Exports all workspaces |
-| `NIMBUS_FOLDER`      | Filter to export specific folder by name    | Exports all folders    |
-| `NIMBUS_OUTPUT_PATH` | Custom output path for the zip file         | `./nimbus-export.zip`  |
+| Variable               | Description                                 | Default               |
+| ---------------------- | ------------------------------------------- | --------------------- |
+| `NIMBUS_EMAIL`         | Your Nimbus Note email                      | Prompts if not set    |
+| `NIMBUS_PASSWORD`      | Your Nimbus Note password                   | Prompts if not set    |
+| `NIMBUS_WORKSPACE`     | Filter to export specific workspace by name | Exports all           |
+| `NIMBUS_FOLDER`        | Filter to export specific folder by name    | Exports all           |
+| `NIMBUS_OUTPUT_PATH`   | Custom output path for the zip file         | `./nimbus-export.zip` |
+| `NIMBUS_EXPORT_FORMAT` | Export format: `html` or `pdf`              | `html`                |
 
 #### Performance Tuning
 
-| Variable                   | Default | Description                                    |
-| -------------------------- | ------- | ---------------------------------------------- |
-| `NIMBUS_TAG_CONCURRENCY`   | 16      | Parallel tag fetch requests                    |
-| `NIMBUS_EXPORT_CONCURRENCY` | 10      | Parallel export requests to WebSocket          |
-| `NIMBUS_DOWNLOAD_CONCURRENCY` | 8    | Parallel file downloads                        |
-| `NIMBUS_EXPORT_TIMEOUT`    | 300000  | Export timeout in milliseconds (5 minutes)     |
-| `NIMBUS_DOWNLOAD_TIMEOUT`  | 60000   | Download timeout in milliseconds (60 seconds)   |
+| Variable                      | Default | Description                                    |
+| ----------------------------- | ------- | ---------------------------------------------- |
+| `NIMBUS_TAG_CONCURRENCY`      | 16      | Parallel tag fetch requests                    |
+| `NIMBUS_EXPORT_CONCURRENCY`   | 10      | Parallel export requests to WebSocket          |
+| `NIMBUS_DOWNLOAD_CONCURRENCY` | 8       | Parallel file downloads                        |
+| `NIMBUS_EXPORT_TIMEOUT`       | 300000  | Export timeout in milliseconds (5 minutes)     |
+| `NIMBUS_DOWNLOAD_TIMEOUT`     | 60000   | Download timeout in milliseconds (60 seconds)  |
 
 #### Retry Configuration
 
-| Variable                   | Default | Description                                    |
-| -------------------------- | ------- | ---------------------------------------------- |
-| `NIMBUS_MAX_RETRIES`       | 3       | Maximum retry attempts for failed requests      |
-| `NIMBUS_RETRY_INITIAL_DELAY` | 1000  | Initial retry delay in milliseconds            |
-| `NIMBUS_RETRY_MAX_DELAY`   | 30000   | Maximum retry delay in milliseconds (30 seconds) |
+| Variable                     | Default | Description                                      |
+| ---------------------------- | ------- | ------------------------------------------------ |
+| `NIMBUS_MAX_RETRIES`         | 3       | Maximum retry attempts for failed requests       |
+| `NIMBUS_RETRY_INITIAL_DELAY` | 1000    | Initial retry delay in milliseconds              |
+| `NIMBUS_RETRY_MAX_DELAY`     | 30000   | Maximum retry delay in milliseconds (30 seconds) |
 
 #### Rate Limiting
 
-| Variable                    | Default | Description                                    |
-| --------------------------- | ------- | ---------------------------------------------- |
-| `NIMBUS_RATE_LIMIT_RPS`     | 10      | Requests per second (token bucket refill rate)  |
-| `NIMBUS_RATE_LIMIT_BURST`   | 20      | Burst size (max tokens available at once)       |
+| Variable                  | Default | Description                                    |
+| ------------------------- | ------- | ---------------------------------------------- |
+| `NIMBUS_RATE_LIMIT_RPS`   | 10      | Requests per second (token bucket refill rate) |
+| `NIMBUS_RATE_LIMIT_BURST` | 20      | Burst size (max tokens available at once)      |
 
 #### Resume & Retry
 
-| Variable                    | Default              | Description                                              |
-| --------------------------- | -------------------- | -------------------------------------------------------- |
-| `NIMBUS_RESUME_FROM`        | -                    | Path to existing archive to skip already-exported notes  |
-| `NIMBUS_RETRY_ONLY`         | -                    | Path to JSON file with note IDs to retry (skips others)  |
-| `NIMBUS_FAILED_NOTES_FILE`  | `./failed-notes.json`| Path to save failed note IDs for later retry             |
-| `NIMBUS_EXTENDED_WAIT`      | 600000               | Extended wait time (ms) for delayed WebSocket events     |
-| `NIMBUS_ENABLE_URL_PREDICTION` | true              | Enable URL prediction recovery for timed-out exports     |
+| Variable                     | Default               | Description                                             |
+| ---------------------------- | --------------------- | ------------------------------------------------------- |
+| `NIMBUS_RESUME_FROM`         | -                     | Path to existing archive to skip already-exported notes |
+| `NIMBUS_RETRY_ONLY`          | -                     | Path to JSON file with note IDs to retry (skips others) |
+| `NIMBUS_FAILED_NOTES_FILE`   | `./failed-notes.json` | Path to save failed note IDs for later retry            |
+| `NIMBUS_EXTENDED_WAIT`       | 600000                | Extended wait time (ms) for delayed WebSocket events    |
+| `NIMBUS_ENABLE_URL_PREDICTION` | true                | Enable URL prediction recovery for timed-out exports    |
 
 #### Debugging
 
-| Variable         | Default | Description                                    |
-| ---------------- | ------- | ---------------------------------------------- |
-| `NIMBUS_DEBUG`   | false   | Enable verbose debug logging                   |
+| Variable       | Default | Description                  |
+| -------------- | ------- | ---------------------------- |
+| `NIMBUS_DEBUG` | false   | Enable verbose debug logging |
 
 Example `.env` file:
 
@@ -130,6 +131,32 @@ cp .env.example .env
 ```
 
 See `.env.example` for all available options with descriptions.
+
+#### Optimal Configuration
+
+Based on testing with 10,000+ notes achieving a 99.94% success rate, these settings are recommended:
+
+```bash
+# Lower concurrency = more reliable (Nimbus API is unreliable)
+NIMBUS_EXPORT_CONCURRENCY=3
+
+# Longer timeout = catches slow exports
+NIMBUS_EXPORT_TIMEOUT=600000
+
+# Shorter extended wait = faster completion (most delayed events arrive within 2 min)
+NIMBUS_EXTENDED_WAIT=120000
+
+# Enable URL prediction for timeout recovery
+NIMBUS_ENABLE_URL_PREDICTION=true
+```
+
+**Why these values?**
+
+| Setting                      | Default | Optimal | Reason                                         |
+| ---------------------------- | ------- | ------- | ---------------------------------------------- |
+| `NIMBUS_EXPORT_CONCURRENCY`  | 10      | 3       | Lower parallelism reduces server-side failures |
+| `NIMBUS_EXPORT_TIMEOUT`      | 300000  | 600000  | 10 min timeout catches slow-processing notes   |
+| `NIMBUS_EXTENDED_WAIT`       | 600000  | 120000  | 2 min is sufficient; 10 min wastes time        |
 
 ### Export Statistics
 
@@ -335,23 +362,25 @@ NIMBUS_RETRY_ONLY=./failed-notes.json nimbus-note-exporter
 
 Some notes may fail with server-side errors that cannot be resolved by retrying:
 
-| Error | Meaning |
-|-------|---------|
-| `TypeError: _this2.getPreviews(...).then is not a function` | Note has corrupted preview data |
+| Error                                                        | Meaning                             |
+| ------------------------------------------------------------ | ----------------------------------- |
+| `TypeError: _this2.getPreviews(...).then is not a function`  | Note has corrupted preview data     |
 | `ReferenceError: editorJsonpCallbackRegistry is not defined` | Note uses unsupported editor features |
 
 These errors occur inside Nimbus's server-side export code. The only solution is to contact Nimbus support with the specific note IDs.
 
 **Confirmed Unrecoverable Notes (sachajw.nimbusweb.me):**
 
-| Note ID | Error |
-|---------|-------|
+| Note ID            | Error                                                        |
+| ------------------ | ------------------------------------------------------------ |
 | `GDHHkp6Uw5t2akrg` | `ReferenceError: editorJsonpCallbackRegistry is not defined` |
 | `6M4LBJPiGRG7jKYd` | `ReferenceError: editorJsonpCallbackRegistry is not defined` |
 | `YE1QnqWZEUYDEsRn` | `ReferenceError: editorJsonpCallbackRegistry is not defined` |
 | `OmDd6llVbJJe5GOX` | `ReferenceError: editorJsonpCallbackRegistry is not defined` |
-| `5Ps6WWyP4If5AZ3E` | `TypeError: _this2.getPreviews(...).then is not a function` |
-| `bCkgPmpJdYIq3EWy` | `TypeError: _this2.getPreviews(...).then is not a function` |
+| `5Ps6WWyP4If5AZ3E` | `TypeError: _this2.getPreviews(...).then is not a function`  |
+| `bCkgPmpJdYIq3EWy` | `TypeError: _this2.getPreviews(...).then is not a function`  |
+
+**Note:** Both HTML and PDF export formats were tested - both fail with identical errors. The export code path is shared on Nimbus's server, so these notes cannot be recovered via the export API regardless of format.
 
 ### Post-Export Conversion: Jimmy
 
@@ -381,18 +410,10 @@ Jimmy expects the same ZIP structure that this tool produces:
 
 ### Nimbus Workspaces
 
-TheVestedLeopard
-Default
-Members 1
-Folders 73
-Pages 263
-Created 02/25/2023
-
-Platform Engineering
-Members 1
-Folders 4582
-Pages 10000
-Created 04/06/2023
+| Workspace              | Members | Folders | Pages  | Created    |
+| ---------------------- | ------- | ------- | ------ | ---------- |
+| TheVestedLeopard       | 1       | 73      | 263    | 02/25/2023 |
+| Platform Engineering   | 1       | 4,582   | 10,000 | 04/06/2023 |
 
 ### Example
 
@@ -420,29 +441,30 @@ Created 04/06/2023
 
 **Multi-Pass Export Results:**
 
-| Pass | Archive | Size | Notes Exported | Cumulative |
-|------|---------|------|----------------|------------|
-| 1 | nimbus-export-pe.zip | 3.0 GB | 2,625 | 2,625 |
-| 2 | nimbus-export-retry.zip | 4.1 GB | 3,381 | 6,006 |
-| 3 | nimbus-export-retry2.zip | 3.9 GB | 3,348 | 9,354 |
-| 4 | nimbus-export-retry3.zip | 724 MB | 639 | 9,993 |
-| 5 | nimbus-export-final.zip | 892 KB | 1 | 9,994 |
-| **Combined** | **nimbus-export-COMPLETE.zip** | **12 GB** | **9,994** | **99.94%** |
+| Pass         | Archive                        | Size       | Notes Exported | Cumulative |
+| ------------ | ------------------------------ | ---------- | -------------- | ---------- |
+| 1            | nimbus-export-pe.zip           | 3.0 GB     | 2,625          | 2,625      |
+| 2            | nimbus-export-retry.zip        | 4.1 GB     | 3,381          | 6,006      |
+| 3            | nimbus-export-retry2.zip       | 3.9 GB     | 3,348          | 9,354      |
+| 4            | nimbus-export-retry3.zip       | 724 MB     | 639            | 9,993      |
+| 5            | nimbus-export-final.zip        | 892 KB     | 1              | 9,994      |
+| **Combined** | **nimbus-export-COMPLETE.zip** | **12 GB**  | **9,994**      | **99.94%** |
 
 ### Test Results Summary
 
 Testing on an affected account (`sachajw.nimbusweb.me`) with 10,000 notes:
 
-| Method                      | Notes Attempted | Result                                      |
-| --------------------------- | --------------- | ------------------------------------------- |
-| Initial Bulk Export         | 10,000          | 2,625 exported (26.3%) - many timeouts      |
-| Retry Pass 1 (resume mode)  | 7,375           | 3,381 additional (cumulative: 6,006)        |
-| Retry Pass 2 (resume mode)  | 3,994           | 3,348 additional (cumulative: 9,354)        |
-| Retry Pass 3 (retry-only)   | 646             | 639 additional (cumulative: 9,993)          |
-| Final Retry (7 notes)       | 7               | 1 additional (cumulative: 9,994)            |
-| **Final Result**            | **10,000**      | **9,994 exported (99.94% success rate)**    |
+| Method                     | Notes Attempted | Result                                   |
+| -------------------------- | --------------- | ---------------------------------------- |
+| Initial Bulk Export        | 10,000          | 2,625 exported (26.3%) - many timeouts   |
+| Retry Pass 1 (resume mode) | 7,375           | 3,381 additional (cumulative: 6,006)     |
+| Retry Pass 2 (resume mode) | 3,994           | 3,348 additional (cumulative: 9,354)     |
+| Retry Pass 3 (retry-only)  | 646             | 639 additional (cumulative: 9,993)       |
+| Final Retry (7 notes)      | 7               | 1 additional (cumulative: 9,994)         |
+| **Final Result**           | **10,000**      | **9,994 exported (99.94% success rate)** |
 
 **Success Story**: Using the resume mode and retry-only features, we achieved a **99.94% success rate** on an account where the initial export only captured 26.3% of notes. The remaining 6 notes have server-side bugs in Nimbus's export code (JavaScript errors like `TypeError` and `ReferenceError`).
+
 **Conclusion**: While the Nimbus export API is unreliable (only ~10-30% of exports succeed on first attempt), the incremental retry approach can recover nearly all notes through multiple passes.
 
 ### API Behavior Details
@@ -508,6 +530,311 @@ After 4-5 passes, expect **99%+ recovery rate**. The remaining ~0.1% are typical
 ## How it works?
 
 This tool was created by reverse engineering Nimbus Note internal API used by their web clients. Expect this to break anytime.
+
+## API Reference
+
+The following endpoints were discovered through reverse engineering the Nimbus Note web client. **These are internal, undocumented APIs and may change without notice.**
+
+### Base URLs
+
+| Domain                       | Purpose                                            |
+| ---------------------------- | -------------------------------------------------- |
+| `nimbusweb.me`               | Authentication                                     |
+| `teams.nimbusweb.me`         | Organizations & Workspaces                         |
+| `{subdomain}.nimbusweb.me`   | User-specific operations (notes, folders, exports) |
+
+### Authentication
+
+#### POST `/auth/api/auth`
+
+Authenticates a user and returns a session ID.
+
+**Request:**
+```json
+{
+  "login": "user@example.com",
+  "password": "password"
+}
+```
+
+**Response:**
+```json
+{
+  "errorCode": 0,
+  "body": {
+    "sessionId": "abc123...",
+    "id": 12345
+  }
+}
+```
+
+**Headers Required:** `Content-Type: application/json`
+
+#### HEAD `/client?t=regfsour:header`
+
+Redirects to user's subdomain to discover their personal domain.
+
+**Response:** HTTP redirect to `https://{subdomain}.nimbusweb.me/...`
+
+---
+
+### Organizations
+
+#### GET `/api/organizations`
+
+**Host:** `teams.nimbusweb.me`
+
+Returns all organizations the user belongs to.
+
+**Response:**
+```json
+[
+  {
+    "globalId": "org123",
+    "subdomain": "myorg",
+    "title": "My Organization",
+    "type": "organization",
+    "createdAt": 1680000000000,
+    "updatedAt": 1680000000000
+  }
+]
+```
+
+---
+
+### Workspaces
+
+#### GET `/api/workspaces/{organizationId}`
+
+**Host:** `teams.nimbusweb.me`
+
+Returns all workspaces in an organization.
+
+**Response:**
+```json
+[
+  {
+    "globalId": "ws123",
+    "title": "My Workspace",
+    "orgId": "org123",
+    "notesCount": 1000,
+    "foldersCount": 50,
+    "isDefault": true,
+    "color": "#4285f4"
+  }
+]
+```
+
+---
+
+### Folders
+
+#### GET `/api/workspaces/{workspaceId}/notes?filter={"type":"folder"}&range={"limit":500,"offset":0}`
+
+**Host:** `{subdomain}.nimbusweb.me`
+
+Returns folders in a workspace (paginated).
+
+**Query Parameters:**
+- `filter` - JSON object: `{"type": "folder"}`
+- `range` - JSON object: `{"limit": 500, "offset": 0}`
+
+**Response:**
+```json
+[
+  {
+    "globalId": "folder123",
+    "parentId": "root",
+    "title": "My Folder",
+    "type": "folder",
+    "cntNotes": 25,
+    "workspaceId": "ws123"
+  }
+]
+```
+
+---
+
+### Notes
+
+#### GET `/api/workspaces/{workspaceId}/notes?range={"limit":500,"offset":0}`
+
+**Host:** `{subdomain}.nimbusweb.me`
+
+Returns notes metadata in a workspace (paginated).
+
+**Response:**
+```json
+[
+  {
+    "globalId": "note123",
+    "parentId": "folder123",
+    "title": "My Note",
+    "type": "note",
+    "createdAt": 1680000000000,
+    "updatedAt": 1680000000000,
+    "size": 1024,
+    "isEncrypted": false,
+    "workspaceId": "ws123"
+  }
+]
+```
+
+#### GET `/api/workspaces/{workspaceId}/notes/{noteId}/tags`
+
+Returns tags for a specific note.
+
+**Response:**
+```json
+["tag1", "tag2", "important"]
+```
+
+---
+
+### Attachments
+
+#### GET `/api/workspaces/{workspaceId}/attachments`
+
+Returns all attachments in a workspace.
+
+**Response:**
+```json
+[
+  {
+    "globalId": "att123",
+    "displayName": "image.png",
+    "mime": "image/png",
+    "noteGlobalId": "note123",
+    "size": 102400,
+    "storedFileUUID": "uuid-123"
+  }
+]
+```
+
+---
+
+### Export
+
+#### POST `/api/workspaces/{workspaceId}/notes/{noteId}/export`
+
+**Host:** `{subdomain}.nimbusweb.me`
+
+Initiates an export job for a note. Returns immediately with a job ID; actual export completion is signaled via WebSocket.
+
+**Request:**
+```json
+{
+  "language": "en",
+  "timezone": -300,
+  "workspaceId": "ws123",
+  "noteGlobalId": "note123",
+  "format": "html",
+  "style": "normal",
+  "size": "normal",
+  "paperFormat": "A4",
+  "folders": {}
+}
+```
+
+**Supported Formats:** `html`, `pdf`
+
+**Response:**
+```json
+{
+  "id": "export-job-uuid"
+}
+```
+
+---
+
+### WebSocket Events
+
+**Connection:** `wss://{subdomain}.nimbusweb.me`
+
+**Headers:** `Cookie: eversessionid={sessionId}`
+
+**Transport:** `websocket` (via socket.io-client)
+
+#### Event: `socketConnect:userConnected`
+
+Fired when WebSocket connection is established.
+
+#### Event: `job:success`
+
+Fired when an export job completes successfully.
+
+```json
+{
+  "message": {
+    "uuid": "export-job-uuid",
+    "fileName": "My Note.zip",
+    "fileUrl": "https://...download-url...",
+    "taskData": {
+      "noteGlobalId": "note123"
+    }
+  }
+}
+```
+
+#### Event: `job:failure`
+
+Fired when an export job fails.
+
+```json
+{
+  "message": {
+    "uuid": "export-job-uuid",
+    "error": "Error message",
+    "taskData": {
+      "noteGlobalId": "note123"
+    }
+  }
+}
+```
+
+#### Event: `job:error`
+
+Fired when an export job encounters a server-side error (JavaScript exception).
+
+```json
+{
+  "message": {
+    "name": "TypeError",
+    "message": "_this2.getPreviews(...).then is not a function",
+    "taskData": {
+      "workspaceId": "ws123",
+      "noteGlobalId": "note123",
+      "format": "html"
+    },
+    "taskType": "editorServer:exportNote",
+    "uuid": "export-job-uuid"
+  }
+}
+```
+
+---
+
+### Download
+
+#### GET `/api/downloads/get?file={exportId}`
+
+**Host:** `{subdomain}.nimbusweb.me`
+
+Downloads the exported note ZIP file. URL is typically provided in the `job:success` WebSocket event.
+
+---
+
+### Rate Limits
+
+- No official rate limit documentation
+- This tool uses a token bucket algorithm: 10 requests/second with burst of 20
+- HTTP 429 responses indicate rate limiting
+
+### Session Management
+
+- Session ID is returned from `/auth/api/auth`
+- All authenticated requests require `Cookie: eversessionid={sessionId}`
+- Sessions appear to be long-lived but may expire
 
 ## The output
 
