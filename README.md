@@ -59,8 +59,11 @@ nimbus-note-exporter
 ```
 
 And you'll be prompted for your email & password. Your credentials are required for login to work.
-**Note:** You should not enter important credentials anywhere EXCEPT the official website. However, if you are required to do so then be CAREFUL and make sure your login details are not going anywhere you don't want/intend.
-After login, everything is automated. At the end you should have a `nimbus-export.zip` file in the directory where you ran the command, along with a comprehensive export summary.
+
+**Note:**
+
+- You should not enter important credentials anywhere EXCEPT the official website. However, if you are required to do so then be CAREFUL and make sure your login details are not going anywhere you don't want/intend.
+- After login, everything is automated. At the end you should have a `nimbus-export.zip` file in the directory where you ran the command, along with a comprehensive export summary.
 
 ### Environment Variables
 
