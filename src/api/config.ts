@@ -124,4 +124,10 @@ export class Config {
   static get retryOnlyFile(): string | undefined {
     return process.env.NIMBUS_RETRY_ONLY;
   }
+
+  // Export format: html or pdf
+  static get exportFormat(): "html" | "pdf" {
+    const val = process.env.NIMBUS_EXPORT_FORMAT?.toLowerCase();
+    return val === "pdf" ? "pdf" : "html";
+  }
 }

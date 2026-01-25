@@ -2,12 +2,10 @@
 
 Nimbus Note recently removed the option (from their desktop clients) to bulk export your notes as HTML or PDF. This tool was created to bring that functionality back into the hands of the user.
 
-> **Note:** This tool is in no way endorsed or affiliated with Nimbus Note or any of their subsidiaries. If you come across any issue while using this tool, you should create a bug report in this repository — NOT ON THEIR SUPPORT CHANNEL.
-
-> **Note 2:** I am not sure this tool comes under "legal" use of Nimbus Note internal APIs so if there's a complaint, I will have to take this down.
-
-> **This tool is strictly for personal use.**
-
+**Note:** This tool is in no way endorsed or affiliated with Nimbus Note or any of their subsidiaries. If you come across any issue while using this tool, you should create a bug report in this repository — NOT ON THEIR SUPPORT CHANNEL.
+**Note 2:** I am not sure this tool comes under "legal" use of Nimbus Note internal APIs so if there's a complaint, I will have to take this down.
+**This tool is strictly for personal use.**
+**Nimbus Export** Nimbus only allows per page [exporting](https://thefusebase.com/guides/settings/how-to-export-notes-to-html-or-pdf/) 
 ## Features
 
 This tool supports exporting of the following data types from Nimbus Note:
@@ -45,7 +43,7 @@ This tool supports exporting of the following data types from Nimbus Note:
 
 First make sure you have Node (v16+) & npm installed then run:
 
-```
+```shell
 npm i -g nimbus-note-exporter
 ```
 
@@ -53,14 +51,12 @@ npm i -g nimbus-note-exporter
 
 After installation, you should have the `nimbus-note-exporter` in your PATH. There is nothing complex to it, just run:
 
-```
+```shell
 nimbus-note-exporter
 ```
 
 And you'll be prompted for your email & password. Your credentials are required for login to work.
-
-> **Note:** You should not enter important credentials anywhere EXCEPT the official website. However, if you are required to do so then be CAREFUL and make sure your login details are not going anywhere you don't want/intend.
-
+**Note:** You should not enter important credentials anywhere EXCEPT the official website. However, if you are required to do so then be CAREFUL and make sure your login details are not going anywhere you don't want/intend.
 After login, everything is automated. At the end you should have a `nimbus-export.zip` file in the directory where you ran the command, along with a comprehensive export summary.
 
 ### Environment Variables
@@ -340,6 +336,17 @@ Some notes may fail with server-side errors that cannot be resolved by retrying:
 
 These errors occur inside Nimbus's server-side export code. The only solution is to contact Nimbus support with the specific note IDs.
 
+**Confirmed Unrecoverable Notes (sachajw.nimbusweb.me):**
+
+| Note ID | Error |
+|---------|-------|
+| `GDHHkp6Uw5t2akrg` | `ReferenceError: editorJsonpCallbackRegistry is not defined` |
+| `6M4LBJPiGRG7jKYd` | `ReferenceError: editorJsonpCallbackRegistry is not defined` |
+| `YE1QnqWZEUYDEsRn` | `ReferenceError: editorJsonpCallbackRegistry is not defined` |
+| `OmDd6llVbJJe5GOX` | `ReferenceError: editorJsonpCallbackRegistry is not defined` |
+| `5Ps6WWyP4If5AZ3E` | `TypeError: _this2.getPreviews(...).then is not a function` |
+| `bCkgPmpJdYIq3EWy` | `TypeError: _this2.getPreviews(...).then is not a function` |
+
 ### Post-Export Conversion: Jimmy
 
 If you successfully export your notes, you can convert them to Markdown using [Jimmy](https://github.com/marph91/jimmy), a universal note converter that supports Nimbus Note:
@@ -365,6 +372,21 @@ Jimmy expects the same ZIP structure that this tool produces:
   ├── metadata.json
   └── assets/
 ```
+
+### Nimbus Workspaces
+
+TheVestedLeopard
+Default
+Members 1
+Folders 73
+Pages 263
+Created 02/25/2023
+
+Platform Engineering
+Members 1
+Folders 4582
+Pages 10000
+Created 04/06/2023
 
 ### Example
 
@@ -415,7 +437,6 @@ Testing on an affected account (`sachajw.nimbusweb.me`) with 10,000 notes:
 | **Final Result**            | **10,000**      | **9,994 exported (99.94% success rate)**    |
 
 **Success Story**: Using the resume mode and retry-only features, we achieved a **99.94% success rate** on an account where the initial export only captured 26.3% of notes. The remaining 6 notes have server-side bugs in Nimbus's export code (JavaScript errors like `TypeError` and `ReferenceError`).
-
 **Conclusion**: While the Nimbus export API is unreliable (only ~10-30% of exports succeed on first attempt), the incremental retry approach can recover nearly all notes through multiple passes.
 
 ### API Behavior Details

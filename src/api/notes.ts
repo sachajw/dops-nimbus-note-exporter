@@ -470,7 +470,7 @@ export async function downloadNotes(
           try {
             // Use retry logic for export requests
             const exportId = await retryOrThrow(
-              () => exportNote(user, note, "html", stats),
+              () => exportNote(user, note, Config.exportFormat, stats),
               {
                 maxRetries: Config.maxRetries,
                 shouldRetry: (error) => {
