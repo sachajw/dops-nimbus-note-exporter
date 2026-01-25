@@ -8,7 +8,7 @@ Nimbus Note recently removed the option (from their desktop clients) to bulk exp
 
 **This tool is strictly for personal use.**
 
-**Nimbus Export** Nimbus only allows per page [exporting](https://thefusebase.com/guides/settings/how-to-export-notes-to-html-or-pdf/) 
+**Nimbus Export** only allows per page [exporting](https://thefusebase.com/guides/settings/how-to-export-notes-to-html-or-pdf/) 
 
 ## Features
 
